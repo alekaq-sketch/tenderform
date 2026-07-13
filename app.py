@@ -3,7 +3,6 @@
 import os
 import tempfile
 from datetime import date
-from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -25,69 +24,168 @@ st.set_page_config(
 
 st.markdown(
     """
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   .stApp {
-    background: linear-gradient(155deg, #0a0e17 0%, #15212c 45%, #1a2332 100%);
+    background-color: #0a0e17;
+    background-image:
+      radial-gradient(ellipse 80% 60% at 15% 20%, rgba(24, 107, 93, 0.22) 0%, transparent 55%),
+      radial-gradient(ellipse 70% 50% at 85% 75%, rgba(45, 100, 128, 0.18) 0%, transparent 50%),
+      radial-gradient(ellipse 50% 40% at 50% 100%, rgba(249, 210, 141, 0.08) 0%, transparent 45%),
+      linear-gradient(155deg, #0a0e17 0%, #121c2a 35%, #1a2332 70%, #0f1824 100%);
+    background-attachment: fixed;
     font-family: "Inter", sans-serif;
   }
+
+  header[data-testid="stHeader"] { background: transparent; }
+
   div.block-container {
-    background: linear-gradient(180deg, #f7f3e9 0%, #f2ebdb 100%);
-    border-radius: 14px;
-    padding: 1.75rem 2rem 2.25rem;
-    margin-top: 0.75rem;
+    background: linear-gradient(180deg, #faf6ec 0%, #f3ebdb 100%);
+    border-radius: 16px;
+    padding: 2.25rem 2rem 2.5rem;
+    margin-top: 1.5rem;
     max-width: 920px;
-    box-shadow: 0 28px 56px rgba(0, 0, 0, 0.38);
+    box-shadow:
+      0 2px 0 rgba(255, 255, 255, 0.06) inset,
+      0 32px 64px rgba(0, 0, 0, 0.45),
+      0 8px 24px rgba(0, 0, 0, 0.25);
     color: #1e252d;
   }
+
   [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none; }
-  h1, h2, h3 { color: #1e252d !important; letter-spacing: -0.02em; }
-  .section-tag {
-    display: inline-block;
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
+
+  h1 { font-size: 1.65rem !important; margin-bottom: 0.15rem !important; }
+  h2, h3 { color: #1e252d !important; }
+
+  div.block-container { padding-top: 2.75rem !important; }
+
+  .app-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1.25rem;
+    margin-bottom: 0.35rem;
+    padding-top: 0.35rem;
+  }
+  .app-header-main h1 {
+    font-size: 1.55rem !important;
+    font-weight: 700 !important;
+    margin: 0 0 0.2rem !important;
+    line-height: 1.2 !important;
+  }
+  .app-header-sub {
+    color: #58606a;
+    font-size: 0.92rem;
+    margin: 0;
+  }
+  .hdr-badges {
+    display: flex;
+    gap: 0.65rem;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    padding-top: 0.15rem;
+  }
+  .hdr-badge {
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid #d8cea9;
+    border-radius: 10px;
+    padding: 0.5rem 0.85rem;
+    min-width: 7.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  }
+  .hdr-badge-label {
+    display: block;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #186b5d;
-    margin-bottom: 0.15rem;
+    margin-bottom: 0.2rem;
   }
+  .hdr-badge-value {
+    display: block;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #1e252d;
+    white-space: nowrap;
+    overflow: visible;
+  }
+
+  .step-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #1e252d;
+    margin: 0 0 0.85rem;
+  }
+  .step-title span {
+    color: #186b5d;
+    font-weight: 700;
+    margin-right: 0.35rem;
+  }
+
   .section-card {
-    background: rgba(255, 255, 255, 0.72);
+    background: rgba(255, 255, 255, 0.78);
     border: 1px solid #d8cea9;
-    border-radius: 10px;
-    padding: 1.1rem 1.25rem;
-    margin-bottom: 0.5rem;
+    border-radius: 12px;
+    padding: 1.15rem 1.3rem;
+    margin-bottom: 0.75rem;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   }
-  div[data-testid="stMetric"] {
-    background: rgba(255, 255, 255, 0.55);
-    border: 1px solid #d8cea9;
-    border-radius: 10px;
-    padding: 0.55rem 0.85rem;
-  }
+
   div[data-testid="stTextInput"] input,
   div[data-testid="stNumberInput"] input,
   div[data-testid="stTextArea"] textarea {
     border-radius: 8px;
     border-color: #d8cea9;
+    background: #fff;
   }
-  button[kind="primary"] {
-    border-radius: 8px;
-    font-weight: 600;
-    background: linear-gradient(135deg, #186b5d, #3e8d7b) !important;
+
+  .stButton > button {
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    border: 1px solid #c5b88e !important;
+    background: #fff !important;
+    color: #1e252d !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06) !important;
+  }
+  .stButton > button:hover {
+    border-color: #186b5d !important;
+    color: #186b5d !important;
+    background: #f8faf9 !important;
+  }
+  .stButton > button[kind="primary"],
+  .stButton > button[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #186b5d, #2d7a6a) !important;
+    color: #fff !important;
     border: none !important;
+    box-shadow: 0 4px 14px rgba(24, 107, 93, 0.35) !important;
   }
+  .stButton > button[kind="primary"]:hover {
+    color: #fff !important;
+    filter: brightness(1.05);
+  }
+  .stButton > button:disabled {
+    opacity: 0.72 !important;
+    background: #ece7da !important;
+    color: #58606a !important;
+    border: 1px dashed #c5b88e !important;
+  }
+
   section[data-testid="stDataEditor"],
   div[data-testid="stDataEditor"] {
     border-radius: 10px;
     border: 1px solid #d8cea9;
     background: #fff;
   }
+
   div[data-testid="stFileUploader"] {
     background: #fff;
-    border: 1.5px dashed #d8cea9;
+    border: 1.5px dashed #c5b88e;
     border-radius: 10px;
-    padding: 0.25rem;
+    padding: 0.35rem;
   }
+  div[data-testid="stFileUploader"] label { display: none; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -260,40 +358,55 @@ def on_lot_end_change() -> None:
 def show_date_error(message: str | None) -> None:
     if message:
         st.markdown(
-            f'<p style="color:#b94e2b;font-size:0.85rem;margin:0.2rem 0 0.6rem;">{message}</p>',
+            f'<p style="color:#b94e2b;font-size:0.85rem;margin:0.15rem 0 0.5rem;">{message}</p>',
             unsafe_allow_html=True,
         )
 
 
-def section(title: str, hint: str = "") -> None:
-    st.markdown(f'<p class="section-tag">{title}</p>', unsafe_allow_html=True)
-    if hint:
-        st.caption(hint)
+def step_heading(number: str, title: str) -> None:
+    st.markdown(
+        f'<p class="step-title"><span>{number}</span>{title}</p>',
+        unsafe_allow_html=True,
+    )
 
 
 init_state()
 
 # Header
-top_left, top_mid, top_right = st.columns([2.4, 1, 1])
-with top_left:
-    st.title("Heat Energy — Tender Calculator")
-    st.caption("Калькулятор тендерных расчётов и подготовки Excel")
-with top_mid:
-    st.metric("Лот", st.session_state.fld_lot_number or "—")
-with top_right:
-    st.metric("Дата", st.session_state.fld_calc_date or date.today().strftime("%d.%m.%Y"))
+lot_display = st.session_state.fld_lot_number.strip() or "не указан"
+date_display = st.session_state.fld_calc_date.strip() or date.today().strftime("%d.%m.%Y")
+st.markdown(
+    f"""
+<div class="app-header-row">
+  <div class="app-header-main">
+    <h1>Heat Energy — Tender Calculator</h1>
+    <p class="app-header-sub">Калькулятор тендерных расчётов и подготовки Excel</p>
+  </div>
+  <div class="hdr-badges">
+    <div class="hdr-badge">
+      <span class="hdr-badge-label">Лот</span>
+      <span class="hdr-badge-value">{lot_display}</span>
+    </div>
+    <div class="hdr-badge">
+      <span class="hdr-badge-label">Дата</span>
+      <span class="hdr-badge-value">{date_display}</span>
+    </div>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 st.divider()
 
-# --- Step 1: Upload ---
-section("01", "Загрузите документ")
+# Step 1
+step_heading("01", "Загрузите документ")
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader(
-    "ТЗ или спецификация",
+    "ТЗ или спецификация (.docx, .xlsx, .pdf)",
     type=["docx", "xlsx", "pdf"],
     accept_multiple_files=False,
-    help="Поддерживаются форматы .docx, .xlsx, .pdf",
 )
 
 recognize_btn = st.button("Распознать", type="primary", disabled=uploaded_file is None)
@@ -327,16 +440,15 @@ if st.session_state["raw_text"]:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-# LLM block — full width, directly under upload
+# LLM
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("Распознавание через LLM (опционально)")
+st.markdown("**Распознавание через LLM** *(опционально)*")
 
 api_key = st.text_input(
     "Anthropic API ключ",
     value=get_secret("ANTHROPIC_API_KEY"),
     type="password",
     placeholder="Введите API-ключ...",
-    help="Нужен только если хотите уточнить распознавание через Claude",
 )
 
 if st.button("Распознать через LLM", disabled=not api_key):
@@ -355,10 +467,10 @@ if st.button("Распознать через LLM", disabled=not api_key):
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-# --- Step 2: Items ---
+# Step 2
 st.divider()
-section("02", "Проверьте позиции")
-st.caption("Редактируйте таблицу. Чтобы удалить строку — отметьте «Удалить» или очистите наименование.")
+step_heading("02", "Проверьте позиции")
+st.caption("Отметьте «Удалить» или очистите наименование, чтобы убрать строку.")
 
 current_items = st.session_state["items"] or [{"name": "", "unit": "", "qty": 0, "unit_price": 0.0}]
 for item in current_items:
@@ -390,9 +502,9 @@ st.session_state["items"] = [
 ]
 items = st.session_state["items"]
 
-# --- Step 3: Lot data ---
+# Step 3
 st.divider()
-section("03", "Данные лота")
+step_heading("03", "Данные лота")
 
 left_col, right_col = st.columns(2)
 
@@ -406,7 +518,8 @@ with left_col:
         placeholder="дд.мм.гггг",
         on_change=on_calc_date_change,
     )
-    show_date_error(validate_date(st.session_state.fld_calc_date, required=True)[1])
+    if st.session_state.fld_calc_date:
+        show_date_error(validate_date(st.session_state.fld_calc_date, required=True)[1])
 
     st.number_input(
         "Сумма дорожных расходов, тг.",
@@ -452,7 +565,7 @@ with right_col:
         format="%d",
     )
 
-usd_left, usd_right = st.columns([4, 1])
+usd_left, usd_right = st.columns([3.2, 1])
 with usd_left:
     st.number_input(
         "Курс USD, тг.",
@@ -462,7 +575,7 @@ with usd_left:
         format="%.2f",
     )
 with usd_right:
-    st.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
     if st.button("с Нацбанка РК", width="stretch"):
         with st.spinner("Загрузка..."):
             rate = fetch_usd_cached()
@@ -474,7 +587,7 @@ with usd_right:
 
 header = sync_header_from_form()
 
-# --- Generate ---
+# Generate
 st.divider()
 
 if st.button("Сформировать расчёт", type="primary", width="stretch"):
