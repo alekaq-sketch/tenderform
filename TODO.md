@@ -10,6 +10,7 @@
 - [ ] Remove large HTML topbar/step wrappers and all CSS that targets them.
 - [x] Rebuild header and sections using Streamlit components (`st.columns`, `st.container`, `st.subheader`, `st.caption`).
 
+
 - [ ] Keep only safe CSS overrides (inputs/buttons/data_editor borders) without heavy `.stApp` background hacks.
 - [ ] Fix typography by relying on Streamlit defaults + small, consistent `font-size` overrides.
 - [ ] Layout compactness: reduce heights, use 2 columns where appropriate, remove vertical “wizard” spacing.
