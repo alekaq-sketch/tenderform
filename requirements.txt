@@ -1,0 +1,7 @@
+flask
+openpyxl
+python-docx
+pdfplumber
+requests
+streamlit>=1.28
+pandas
