@@ -1,12 +1,12 @@
 [theme]
 primaryColor = "#186b5d"
-backgroundColor = "#f7f3e9"
+backgroundColor = "#0a0e17"
 secondaryBackgroundColor = "#ffffff"
 textColor = "#1e252d"
 font = "sans serif"
 
 [client]
-showErrorDetails = true
+showErrorDetails = false
 toolbarMode = "viewer"
 
 [server]
