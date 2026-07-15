@@ -93,29 +93,10 @@ st.markdown(
     margin-bottom: 0.35rem;
     padding-top: 0.9rem;
   }
-  .brand-row {
-    display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    margin: 0 0 0.3rem;
-  }
-  .brand-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 2.3rem;
-    height: 2.3rem;
-    flex-shrink: 0;
-    border-radius: 10px;
-    background: linear-gradient(135deg, var(--teal), var(--ember));
-    color: #fff;
-    font-size: 1.2rem;
-    box-shadow: 0 6px 14px rgba(24, 107, 93, 0.4);
-  }
   .app-header-main h1 {
     font-size: 1.55rem !important;
     font-weight: 700 !important;
-    margin: 0 !important;
+    margin: 0 0 0.2rem !important;
     line-height: 1.2 !important;
     letter-spacing: -0.01em;
   }
@@ -354,10 +335,6 @@ def save_uploaded_file(uploaded_file) -> str:
         return tmp.name
 
 
-def has_valid_items(items: list[dict]) -> bool:
-    return bool(items) and any(item.get("name") for item in items)
-
-
 def step_heading(number: str, title: str) -> None:
     st.markdown(
         f'<p class="step-title"><span class="num">{number}</span>{title}</p>',
@@ -370,7 +347,20 @@ def fmt_date(value) -> str:
 
 
 init_state()
-lot_type_key = "lot_ids_" + st.session_state["lot_type"]
+# Reading the RADIO WIDGET'S OWN key here (before the radio itself is even
+# rendered further down) is intentional, not a mistake: Streamlit applies a
+# widget's new value to session_state as soon as the click is processed -
+# before the script starts running - so this already reflects the current
+# click. st.session_state["lot_type"] (a separate mirror variable, set only
+# once the script reaches the "Тип лота" section below) would instead still
+# hold the *previous* run's value at this point, which is exactly what made
+# the "Лотов в тендере" badge show the other tab's count for one render
+# after switching.
+lot_type = ("foreign"
+            if st.session_state.get("fld_lot_type_radio", "Казахстан → Казахстан") != "Казахстан → Казахстан"
+            else "kz")
+st.session_state["lot_type"] = lot_type
+lot_type_key = f"lot_ids_{lot_type}"
 
 # ------------------------------------------------- Плавающий калькулятор ---
 # Обычный арифметический калькулятор "для прикидок", не связанный с бизнес-
@@ -474,10 +464,7 @@ st.markdown(
     f"""
 <div class="app-header-row">
   <div class="app-header-main">
-    <div class="brand-row">
-      <span class="brand-mark">⚡</span>
-      <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
-    </div>
+    <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
     <p class="app-header-sub">Калькулятор тендерных расчётов и подготовки Excel</p>
   </div>
   <div class="hdr-badges">
@@ -495,12 +482,10 @@ st.divider()
 
 # ------------------------------------------------------- Step 0: тип лота --
 step_heading("01", "Тип лота")
-lot_type_choice = st.radio(
+st.radio(
     "Тип лота", ["Казахстан → Казахстан", "Закупка за рубежом → Казахстан"],
     key="fld_lot_type_radio", horizontal=True, label_visibility="collapsed",
 )
-lot_type = "foreign" if lot_type_choice != "Казахстан → Казахстан" else "kz"
-st.session_state["lot_type"] = lot_type
 
 lot_ids_key = f"lot_ids_{lot_type}"
 next_id_key = f"next_lot_id_{lot_type}"
@@ -533,21 +518,28 @@ def remove_lot(lot_id: int) -> None:
 
 
 lot_ids = st.session_state[lot_ids_key]
-tab_cols = st.columns(len(lot_ids) + 1)
-for i, lid in enumerate(lot_ids):
-    with tab_cols[i]:
-        is_active = lid == st.session_state[active_key]
-        if st.button(f"Лот {i + 1}", key=f"btn_select_lot_{lot_type}_{lid}",
-                     type="primary" if is_active else "secondary", width="stretch"):
-            st.session_state[active_key] = lid
-with tab_cols[-1]:
-    st.button("+ Лот", key=f"btn_add_lot_{lot_type}", on_click=add_lot, width="stretch")
-
+# st.pills is one widget with its own managed state, not N separate
+# st.button()s laid out in st.columns() - the earlier button-row version
+# was flaky (stale highlight for one render after a click, occasional
+# missed clicks when the column count changed on add/remove) because it
+# hand-rolled selection state instead of using a widget built for it.
+# required=True means a lot is always selected - there is never "no active
+# lot" to handle.
+st.pills(
+    "Лот", options=lot_ids, format_func=lambda lid: f"Лот {lot_ids.index(lid) + 1}",
+    key=active_key, selection_mode="single", required=True,
+    label_visibility="collapsed",
+)
 active_id = st.session_state[active_key]
-if len(lot_ids) > 1:
-    st.button(f"Удалить лот {lot_ids.index(active_id) + 1}",
-              key=f"btn_remove_lot_{lot_type}_{active_id}",
-              on_click=remove_lot, args=(active_id,))
+
+add_col, remove_col = st.columns(2)
+with add_col:
+    st.button("+ Добавить лот", key=f"btn_add_lot_{lot_type}",
+              on_click=add_lot, width="stretch")
+with remove_col:
+    st.button(f"Удалить лот {lot_ids.index(active_id) + 1}", key=f"btn_remove_lot_{lot_type}",
+              on_click=remove_lot, args=(active_id,),
+              disabled=len(lot_ids) <= 1, width="stretch")
 
 
 def k(field: str) -> str:
@@ -687,18 +679,23 @@ if lot_type == "kz":
     ]
     items_df = pd.DataFrame(current_items, columns=["name", "qty", "purchase_price_ddp",
                                                       "extra_cost"])
+    # Streamlit's "small"/"medium"/"large" width categories are rough hints,
+    # not sized to the label's actual text - a long header still truncates
+    # inside a "medium" column. Explicit pixel widths (supported alongside
+    # the categories) let each column fit its own header; anything that
+    # doesn't fit on one line goes into a help= tooltip instead.
     edited_df = st.data_editor(
         items_df, width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
-            "name": st.column_config.TextColumn("Наименование", width="large"),
+            "name": st.column_config.TextColumn("Наименование", width=280),
             "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
-                                                  format="%d", width="small"),
+                                                  format="%d", width=90),
             "purchase_price_ddp": st.column_config.NumberColumn(
-                "Цена закупки DDP (с НДС), тнг", min_value=0, step=100,
-                format="%.2f", width="medium"),
+                "Цена DDP, тнг", help="Цена закупки DDP (с НДС), тенге.",
+                min_value=0, step=100, format="%.2f", width=150),
             "extra_cost": st.column_config.NumberColumn(
-                "Доп.расходы (прочее), тнг", min_value=0, step=1000,
-                format="%.2f", width="medium"),
+                "Доп.расходы, тнг", help="Прочие расходы по товару, тенге.",
+                min_value=0, step=1000, format="%.2f", width=150),
         },
         key=items_editor_key,
     )
@@ -722,32 +719,32 @@ else:
     edited_df = st.data_editor(
         items_df, width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
-            "name": st.column_config.TextColumn("Наименование", width="large"),
-            "unit": st.column_config.TextColumn("Ед.изм", width="small"),
+            "name": st.column_config.TextColumn("Наименование", width=280),
+            "unit": st.column_config.TextColumn("Ед.изм", width=80),
             "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
-                                                  format="%d", width="small"),
+                                                  format="%d", width=90),
             "price_fca": st.column_config.NumberColumn(
-                f"Цена FCA, {currency_now}/ед.", min_value=0, step=10,
-                format="%.2f", width="medium"),
+                f"Цена FCA, {currency_now}", help=f"Цена FCA за единицу, {currency_now}.",
+                min_value=0, step=10, format="%.2f", width=140),
             "sale_price_kzt": st.column_config.NumberColumn(
-                "Цена продажи без НДС, тнг/шт", min_value=0, step=1000,
-                format="%.2f", width="medium"),
+                "Цена продажи, тнг", help="Цена без НДС, которую вы выставляете заказчику, тенге/шт.",
+                min_value=0, step=1000, format="%.2f", width=160),
             "duty_rate_pct": st.column_config.NumberColumn(
                 "Пошлина, %", min_value=0, max_value=100, step=0.5,
-                format="%.1f", width="small"),
+                format="%.1f", width=110),
             "truck_count": st.column_config.NumberColumn(
-                "Кол-во машин (=ГТД)", min_value=1, step=1,
-                format="%d", width="medium"),
+                "Кол-во машин", help="= кол-во деклараций ГТД (1 машина = 1 декларация).",
+                min_value=1, step=1, format="%d", width=130),
             "overhead": st.column_config.NumberColumn(
-                f"Накладные, {currency_now} (нет единого стандарта — впишите свою сумму)",
-                min_value=0, step=10, format="%.2f", width="medium"),
+                f"Накладные, {currency_now}", help="Нет единого стандарта — впишите свою сумму.",
+                min_value=0, step=10, format="%.2f", width=150),
             "extra_cost": st.column_config.NumberColumn(
-                f"Доп.расходы (прочее), {currency_now}", min_value=0, step=10,
-                format="%.2f", width="medium"),
-            "country": st.column_config.TextColumn("Страна происхождения", width="medium"),
-            "tnved": st.column_config.TextColumn("ТН ВЭД", width="medium"),
+                f"Доп.расходы, {currency_now}", help="Прочие расходы по товару.",
+                min_value=0, step=10, format="%.2f", width=150),
+            "country": st.column_config.TextColumn("Страна происхождения", width=180),
+            "tnved": st.column_config.TextColumn("ТН ВЭД", width=120),
             "transport": st.column_config.TextColumn(
-                "Кол-во подвижных / транспорт", width="medium"),
+                "Транспорт", help="Кол-во подвижного состава / вид транспорта.", width=150),
         },
         key=items_editor_key,
     )
