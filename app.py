@@ -61,8 +61,8 @@ st.markdown(
     position: relative;
     background: linear-gradient(180deg, var(--paper) 0%, var(--paper-2) 100%);
     border-radius: 14px;
-    padding: 2.75rem 2.25rem 2.5rem;
-    margin-top: 1.5rem;
+    padding: 1.4rem 2.25rem 2.5rem;
+    margin-top: 0.6rem;
     max-width: 960px;
     box-shadow:
       0 2px 0 rgba(255, 255, 255, 0.5) inset,
@@ -91,7 +91,7 @@ st.markdown(
     align-items: flex-start;
     gap: 1.25rem;
     margin-bottom: 0.35rem;
-    padding-top: 0.9rem;
+    padding-top: 0.2rem;
   }
   .app-header-main h1 {
     font-size: 1.55rem !important;
@@ -369,7 +369,7 @@ lot_type_key = f"lot_ids_{lot_type}"
 # перепрошивка позиции происходит один раз при загрузке фрейма, а сам фрейм
 # Streamlit не перемонтирует, пока его HTML не меняется между прогонами.
 st.iframe(
-    """
+    r"""
 <style>
   #calc-shell { position: fixed; top: 110px; right: 22px; z-index: 999999;
     font-family: Inter, sans-serif; }
@@ -389,7 +389,7 @@ st.iframe(
     font-size:14.5px; color:#1e252d; cursor:pointer; font-family:Inter,sans-serif; }
   #calc-grid button:hover { background:#fdf3e7; }
   #calc-grid button.op { background:#f2ebdb; color:#186b5d; font-weight:600; }
-  #calc-grid button.eq { background:#c17a3f; color:#fff; font-weight:700; }
+  #calc-grid button.eq { background:#c17a3f; color:#fff; font-weight:700; grid-column: span 3; }
   #calc-grid button.eq:hover { background:#a8672f; }
   #calc-body.collapsed { display:none; }
 </style>
@@ -408,10 +408,25 @@ st.iframe(
 (function () {
   var screen = document.getElementById('calc-screen');
   var grid = document.getElementById('calc-grid');
-  var keys = ['C','⌫','%','÷', '7','8','9','×', '4','5','6','-', '1','2','3','+', '0','00','.','='];
+  var keys = ['(',')','C','⌫', '7','8','9','÷', '4','5','6','×', '1','2','3','-', '0','00','.','+', '%','='];
   var expr = '';
 
-  function render() { screen.textContent = expr === '' ? '0' : expr; }
+  // Раздельные разряды пробелом при отображении ("500 000" вместо "500000"),
+  // чтобы с одного взгляда отличить 500 тысяч от 5 миллионов - как и везде
+  // в форме. Форматируется только ЭКРАН: сама expr остаётся "чистой"
+  // строкой без пробелов, поэтому на вычисления (и на то, что попадёт в
+  // регэксп-проверку безопасности перед eval) это не влияет.
+  function formatNumber(numStr) {
+    var parts = numStr.split('.');
+    var intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    return parts.length > 1 ? intPart + '.' + parts[1] : intPart;
+  }
+
+  function formatExpr(str) {
+    return str.replace(/\d+(\.\d*)?/g, function (m) { return formatNumber(m); });
+  }
+
+  function render() { screen.textContent = expr === '' ? '0' : formatExpr(expr); }
 
   function press(k) {
     if (k === 'C') { expr = ''; }
@@ -419,7 +434,7 @@ st.iframe(
     else if (k === '=') {
       try {
         var safe = expr.replace(/×/g, '*').replace(/÷/g, '/').replace(/%/g, '/100');
-        if (!/^[0-9+\\-*/.() ]*$/.test(safe)) throw new Error('bad');
+        if (!/^[0-9+\-*/.() ]*$/.test(safe)) throw new Error('bad');
         var result = Function('"use strict"; return (' + safe + ')')();
         expr = String(Math.round(result * 1e8) / 1e8);
       } catch (e) { expr = 'Ошибка'; }
