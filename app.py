@@ -459,6 +459,36 @@ st.iframe(
     height=1,
 )
 
+# ------------------------------------------ Автовыделение чисел в полях ---
+# st.number_input, в отличие от табличных редакторов, не выделяет текущее
+# значение при клике/фокусе - приходится сначала вручную стирать то, что
+# там уже написано (например "0"), и только потом печатать своё. Родного
+# параметра под это в Streamlit нет, поэтому вешаем делегированный
+# обработчик на document родительского окна - тот же приём, что и у
+# калькулятора ниже (iframe того же происхождения, доступ разрешён).
+# Обработчик висит на document, а не на конкретных полях, поэтому
+# переживает любые перерисовки Streamlit (поля в DOM пересоздаются -
+# слушатель на их родителе остаётся).
+st.iframe(
+    """
+<script>
+(function () {
+  try {
+    var doc = window.parent.document;
+    doc.addEventListener('focusin', function (e) {
+      var el = e.target;
+      if (el && el.tagName === 'INPUT' &&
+          el.closest('[data-testid="stNumberInput"]')) {
+        el.select();
+      }
+    });
+  } catch (e) {}
+})();
+</script>
+""",
+    height=1,
+)
+
 # ---------------------------------------------------------------- Header ---
 st.markdown(
     f"""
@@ -789,7 +819,7 @@ with left_col:
                          key=k("road_cost"), min_value=0.0, step=1000.0, format="%.2f")
 
 with right_col:
-    st.text_input("Поставщик", key=k("supplier"), placeholder="Введите поставщика...")
+    st.text_input("Заказчик", key=k("supplier"), placeholder="Введите заказчика...")
     if lot_type == "kz":
         st.number_input("Коэффициент наценки (> 1)", key=k("markup_coef"),
                          min_value=1.01, step=0.05, format="%.2f")
