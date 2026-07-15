@@ -666,17 +666,33 @@ st.markdown("</div>", unsafe_allow_html=True)
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
 step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
-st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
-           "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
-           "строка исчезнет сразу, без лишних шагов."
+st.caption("Новую строку добавляйте кнопкой «+ Добавить позицию» ниже, а не "
+           "вводом прямо в последнюю пустую строку таблицы — ввод в неё "
+           "иногда не сохраняется (известная особенность таблиц Streamlit: "
+           "правка и добавление строки, отправленные одним нажатием Enter, "
+           "могут разминуться). Через кнопку строка сначала создаётся "
+           "пустой, а потом в неё можно спокойно вписывать значения. Чтобы "
+           "удалить строку: выделите её слева (наведите на номер строки) и "
+           "нажмите на значок корзины сверху таблицы, либо клавишу Delete."
            + (" Страна происхождения / ТН ВЭД / транспорт указываются на каждый "
               "товар отдельно — они могут отличаться от позиции к позиции."
               if lot_type == "foreign" else ""))
 
+DEFAULT_ROW_KZ = {"name": "", "qty": 0, "purchase_price_ddp": 0.0, "extra_cost": 0.0}
+DEFAULT_ROW_FX = {"name": "", "unit": "", "qty": 0, "price_fca": 0.0, "sale_price_kzt": 0.0,
+                   "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 0.0, "extra_cost": 0.0,
+                   "country": "", "tnved": "", "transport": ""}
+
+
+def add_item_row(default_row: dict) -> None:
+    st.session_state[items_state_key].append(dict(default_row))
+
+
+st.button("+ Добавить позицию", key=f"btn_add_item_{items_state_key}",
+          on_click=add_item_row, args=(DEFAULT_ROW_KZ if lot_type == "kz" else DEFAULT_ROW_FX,))
+
 if lot_type == "kz":
-    current_items = st.session_state[items_state_key] or [
-        {"name": "", "qty": 0, "purchase_price_ddp": 0.0, "extra_cost": 0.0}
-    ]
+    current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_KZ)]
     items_df = pd.DataFrame(current_items, columns=["name", "qty", "purchase_price_ddp",
                                                       "extra_cost"])
     # Streamlit's "small"/"medium"/"large" width categories are rough hints,
@@ -707,11 +723,7 @@ if lot_type == "kz":
     ]
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 else:
-    current_items = st.session_state[items_state_key] or [
-        {"name": "", "unit": "", "qty": 0, "price_fca": 0.0, "sale_price_kzt": 0.0,
-         "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 0.0, "extra_cost": 0.0,
-         "country": "", "tnved": "", "transport": ""}
-    ]
+    current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_FX)]
     cols = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
             "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
     items_df = pd.DataFrame(current_items, columns=cols)
