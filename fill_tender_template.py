@@ -227,7 +227,7 @@ def _fill_block_kz(ws, block_first: int, header: dict, items: list[dict]) -> int
     if extra > 0:
         ws.insert_rows(first_row + 1, amount=extra)
         _shift_all_formulas_below(ws, insertion_row=first_row + 1, shift=extra,
-                                   max_row=block_first + 200, max_col=22)
+                                   max_row=block_first + 2000, max_col=22)
         for rr in range(first_row + 1, first_row + 1 + extra):
             _copy_row_style(ws, first_row, rr, min_col=2, max_col=20)  # B..T
         total_row += extra
@@ -279,7 +279,7 @@ def _fill_block_foreign(ws, block_first: int, header: dict, items: list[dict]) -
     if extra > 0:
         ws.insert_rows(first_row + 1, amount=extra)
         _shift_all_formulas_below(ws, insertion_row=first_row + 1, shift=extra,
-                                   max_row=block_first + 200, max_col=36)
+                                   max_row=block_first + 2000, max_col=36)
         for rr in range(first_row + 1, first_row + 1 + extra):
             _copy_row_style(ws, first_row, rr, min_col=2, max_col=35)  # B..AI
         total_row += extra
@@ -307,6 +307,21 @@ def _fill_block_foreign(ws, block_first: int, header: dict, items: list[dict]) -
     if len(items) > 1:
         for coord in (f"B{r(19)}", f"B{r(20)}", f"B{r(21)}"):
             ws[coord].alignment = Alignment(wrap_text=True, vertical="top")
+
+    # The template's "Block 1" column headers (R11..Y11) and the Q23 label
+    # hardcode "$" (and, in one spot the template already had inconsistent -
+    # W11 says "eur" instead of "$") regardless of which currency the lot
+    # actually uses. Since every lot can now have its own currency, these
+    # need to say the *right* one instead of always implying USD/EUR.
+    currency = header.get("currency", "USD")
+    for col in ("R", "S", "T", "U", "X", "Y"):
+        cell = ws[f"{col}{r(11)}"]
+        if isinstance(cell.value, str):
+            cell.value = cell.value.replace("$", currency)
+    w11 = ws[f"W{r(11)}"]
+    if isinstance(w11.value, str):
+        w11.value = w11.value.replace("eur", currency)
+    ws[f"Q{r(23)}"] = currency
 
     return r(26) + extra
 

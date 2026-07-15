@@ -321,7 +321,12 @@ def init_state() -> None:
 def normalize_item_kz(item: dict) -> dict:
     return {
         "name": str(item.get("name") or "").strip(),
-        "qty": max(0, int(item.get("qty") or 0)),
+        # qty=0 on a named row used to be allowed, which is harmless in the
+        # kz template (nothing divides by quantity there) but produces a
+        # #DIV/0! in the foreign template (see normalize_item_fx) - clamped
+        # to 1 in both for consistency, and because "0 of an item" isn't a
+        # meaningful line anyway.
+        "qty": max(1, int(item.get("qty") or 1)),
         "purchase_price_ddp": max(0.0, float(item.get("purchase_price_ddp") or 0)),
         "extra_cost": max(0.0, float(item.get("extra_cost") or 0)),
     }
@@ -331,7 +336,11 @@ def normalize_item_fx(item: dict) -> dict:
     return {
         "name": str(item.get("name") or "").strip(),
         "unit": str(item.get("unit") or "").strip(),
-        "qty": max(0, int(item.get("qty") or 0)),
+        # qty=0 here used to reach the foreign template's H/R columns, both
+        # of which divide by quantity per item (=.../E12) - a named row with
+        # qty=0 would generate a #DIV/0! in Excel. Minimum 1, same reasoning
+        # as truck_count below.
+        "qty": max(1, int(item.get("qty") or 1)),
         "price_fca": max(0.0, float(item.get("price_fca") or 0)),
         "sale_price_kzt": max(0.0, float(item.get("sale_price_kzt") or 0)),
         "duty_rate_pct": max(0.0, float(item.get("duty_rate_pct") or 0)),
@@ -748,8 +757,8 @@ st.caption("Чтобы удалить строку: выделите её сле
               "товар отдельно — они могут отличаться от позиции к позиции."
               if lot_type == "foreign" else ""))
 
-DEFAULT_ROW_KZ = {"name": "", "qty": 0, "purchase_price_ddp": 0.0, "extra_cost": 0.0}
-DEFAULT_ROW_FX = {"name": "", "unit": "", "qty": 0, "price_fca": 0.0, "sale_price_kzt": 0.0,
+DEFAULT_ROW_KZ = {"name": "", "qty": 1, "purchase_price_ddp": 0.0, "extra_cost": 0.0}
+DEFAULT_ROW_FX = {"name": "", "unit": "", "qty": 1, "price_fca": 0.0, "sale_price_kzt": 0.0,
                    "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 0.0, "extra_cost": 0.0,
                    "country": "", "tnved": "", "transport": ""}
 
@@ -780,7 +789,7 @@ if lot_type == "kz":
         st.session_state[items_seed_key], width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
             "name": st.column_config.TextColumn("Наименование", width=280),
-            "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
+            "qty": st.column_config.NumberColumn("Кол-во", min_value=1, step=1,
                                                   format="%d", width=90),
             "purchase_price_ddp": st.column_config.NumberColumn(
                 "Цена DDP, тнг", help="Цена закупки DDP (с НДС), тенге.",
@@ -810,7 +819,7 @@ else:
         column_config={
             "name": st.column_config.TextColumn("Наименование", width=280),
             "unit": st.column_config.TextColumn("Ед.изм", width=80),
-            "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
+            "qty": st.column_config.NumberColumn("Кол-во", min_value=1, step=1,
                                                   format="%d", width=90),
             "price_fca": st.column_config.NumberColumn(
                 f"Цена FCA, {currency_now}", help=f"Цена FCA за единицу, {currency_now}.",
@@ -974,6 +983,15 @@ if st.button("Сформировать расчёт по всем лотам", t
             currency = st.session_state.get(lk("currency"), "USD")
             if fx_rate <= 0:
                 errors.append(f"Лот {pos}: укажите курс {currency} (тг.).")
+                continue
+            # The road-cost split formula in the foreign template divides
+            # each item's road price by the *lot's total* purchase sum
+            # (=G12/$G$13*...) - if every item has price_fca=0, that total is
+            # zero and Excel would show #DIV/0! for every item's road cost.
+            purchase_sum = sum(it["price_fca"] * it["qty"] for it in lot_items)
+            if purchase_sum <= 0:
+                errors.append(f"Лот {pos}: укажите цену FCA хотя бы для одной позиции — "
+                               f"иначе в Excel формула дороги поделит на нулевую сумму закупки.")
                 continue
             header = {
                 "manager": st.session_state[lk("manager")].strip(),
