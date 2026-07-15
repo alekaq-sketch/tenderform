@@ -12,8 +12,7 @@ from extract_heuristic import extract_items as extract_items_free
 from extract_raw import extract_any
 from extract_with_llm import extract_fields as extract_items_llm
 from fetch_usd_rate import get_rate, currency_for_country
-from fill_tender_template import fill_multi, fill_multi_foreign
-from calc_engine import compute_kz, compute_foreign
+from fill_tender_template import fill_lots_kz, fill_lots_foreign
 
 
 st.set_page_config(
@@ -64,23 +63,24 @@ st.markdown(
     border-radius: 14px;
     padding: 2.75rem 2.25rem 2.5rem;
     margin-top: 1.5rem;
-    max-width: 920px;
+    max-width: 960px;
     box-shadow:
       0 2px 0 rgba(255, 255, 255, 0.5) inset,
       0 32px 64px rgba(0, 0, 0, 0.45),
       0 8px 24px rgba(0, 0, 0, 0.25);
     color: var(--ink);
   }
-  /* signature detail: a folded corner tab, like a stamped tender form */
+  /* full-width gradient band across the top of the card, echoed as a
+     subtle glow behind the brand mark so the header reads as one piece */
   div.block-container::before {
     content: "";
     position: absolute;
     top: 0;
-    left: 2.25rem;
-    width: 46px;
-    height: 6px;
-    border-radius: 0 0 4px 4px;
-    background: linear-gradient(90deg, var(--teal), var(--ember-soft));
+    left: 0;
+    right: 0;
+    height: 7px;
+    border-radius: 14px 14px 0 0;
+    background: linear-gradient(90deg, var(--teal) 0%, var(--ember-soft) 50%, var(--teal) 100%);
   }
 
   h1, h2, h3 { color: var(--ink) !important; }
@@ -91,12 +91,31 @@ st.markdown(
     align-items: flex-start;
     gap: 1.25rem;
     margin-bottom: 0.35rem;
-    padding-top: 0.5rem;
+    padding-top: 0.9rem;
+  }
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin: 0 0 0.3rem;
+  }
+  .brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.3rem;
+    height: 2.3rem;
+    flex-shrink: 0;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--teal), var(--ember));
+    color: #fff;
+    font-size: 1.2rem;
+    box-shadow: 0 6px 14px rgba(24, 107, 93, 0.4);
   }
   .app-header-main h1 {
     font-size: 1.55rem !important;
     font-weight: 700 !important;
-    margin: 0 0 0.2rem !important;
+    margin: 0 !important;
     line-height: 1.2 !important;
     letter-spacing: -0.01em;
   }
@@ -174,13 +193,15 @@ st.markdown(
   }
 
   div[data-testid="stTextInput"] label,
-  div[data-testid="stNumberInput"] label {
+  div[data-testid="stNumberInput"] label,
+  div[data-testid="stDateInput"] label {
     font-size: 0.84rem !important;
     font-weight: 500 !important;
     color: var(--ink-soft) !important;
   }
   div[data-testid="stTextInput"] input,
   div[data-testid="stNumberInput"] input,
+  div[data-testid="stDateInput"] input,
   div[data-testid="stTextArea"] textarea {
     border-radius: 7px;
     border-color: var(--line);
@@ -191,6 +212,7 @@ st.markdown(
   }
   div[data-testid="stTextInput"] input:focus,
   div[data-testid="stNumberInput"] input:focus,
+  div[data-testid="stDateInput"] input:focus,
   div[data-testid="stTextArea"] textarea:focus {
     border-color: var(--ember) !important;
     box-shadow: 0 0 0 1px var(--ember) !important;
@@ -277,95 +299,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 TEMPLATE_PATHS = {"kz": "template_kz-kz.xlsx", "foreign": "template_foreign.xlsx"}
-CURRENCY_LABELS = {"USD": "USD", "RUB": "RUB", "EUR": "EUR"}
 
 
 def init_state() -> None:
     st.session_state.setdefault("lot_type", "kz")
-    st.session_state.setdefault("items_kz", [])
-    st.session_state.setdefault("items_foreign", [])
-    st.session_state.setdefault(
-        "header",
-        {
-            "manager": "", "supplier": "", "lot_number": "",
-            "calc_date": date.today().strftime("%d.%m.%Y"),
-            "lot_start": "", "lot_end": "",
-            "lead_time_days": 10, "delivery_days": 30,
-            "markup_coef_kz": 1.5, "markup_coef_fx": 1.2,
-            "usd_rate": 0.0, "fx_rate": 0.0,
-            "road_cost_kz": 0.0, "road_cost_fx": 0.0,
-            "vat_rate": 0.16,
-            "currency": "USD",
-        },
-    )
+    st.session_state.setdefault("lot_ids_kz", [0])
+    st.session_state.setdefault("lot_ids_foreign", [0])
+    st.session_state.setdefault("next_lot_id_kz", 1)
+    st.session_state.setdefault("next_lot_id_foreign", 1)
+    st.session_state.setdefault("active_lot_kz", 0)
+    st.session_state.setdefault("active_lot_foreign", 0)
     st.session_state.setdefault("raw_text", "")
     st.session_state.setdefault("generated_file", None)
     st.session_state.setdefault("generated_name", "расчёт.xlsx")
-
-    h = st.session_state["header"]
-    defaults = {
-        "fld_manager": h["manager"], "fld_supplier": h["supplier"],
-        "fld_lot_number": h["lot_number"], "fld_calc_date": h["calc_date"],
-        "fld_lot_start": h["lot_start"], "fld_lot_end": h["lot_end"],
-        "fld_lead_time_days": int(h["lead_time_days"]),
-        "fld_delivery_days": int(h["delivery_days"]),
-        "fld_markup_coef_kz": float(h["markup_coef_kz"]),
-        "fld_markup_coef_fx": float(h["markup_coef_fx"]),
-        "fld_usd_rate": float(h["usd_rate"]),
-        "fld_fx_rate": float(h["fx_rate"]),
-        "fld_road_cost_kz": float(h["road_cost_kz"]),
-        "fld_road_cost_fx": float(h["road_cost_fx"]),
-        "fld_vat_rate": float(h["vat_rate"]) * 100,
-        "fld_currency": h["currency"],
-    }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
-
-
-def format_date_input(value: str) -> str:
-    digits = "".join(c for c in value if c.isdigit())[:8]
-    if len(digits) <= 2:
-        return digits
-    if len(digits) <= 4:
-        return f"{digits[:2]}.{digits[2:]}"
-    return f"{digits[:2]}.{digits[2:4]}.{digits[4:]}"
-
-
-def validate_date(value: str, *, required: bool = False) -> tuple[str, str | None]:
-    formatted = format_date_input(value)
-    if not formatted:
-        return formatted, "Укажите дату" if required else None
-
-    parts = formatted.split(".")
-    if len(parts) == 1:
-        return formatted, None
-    if len(parts) == 2:
-        day_s, month_s = parts
-        if day_s and (not day_s.isdigit() or int(day_s) < 1 or int(day_s) > 31):
-            return formatted, "День должен быть от 01 до 31"
-        if month_s and (not month_s.isdigit() or int(month_s) < 1 or int(month_s) > 12):
-            return formatted, "Месяц должен быть от 01 до 12"
-        return formatted, None
-
-    day_s, month_s, year_s = parts[0], parts[1], parts[2]
-    if not (day_s.isdigit() and month_s.isdigit() and year_s.isdigit()):
-        return formatted, "Дата должна быть в формате дд.мм.гггг"
-    day, month, year = int(day_s), int(month_s), int(year_s)
-    if day < 1 or day > 31:
-        return formatted, "День должен быть от 01 до 31"
-    if month < 1 or month > 12:
-        return formatted, "Месяц должен быть от 01 до 12"
-    if len(year_s) < 4:
-        return formatted, None
-    if year < 2000 or year > 2100:
-        return formatted, "Год должен быть от 2000 до 2100"
-    return formatted, None
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_rate_cached(currency: str) -> float:
-    """Raises on failure so the caller can show the real error."""
-    return get_rate(currency)
 
 
 def normalize_item_kz(item: dict) -> dict:
@@ -386,7 +332,7 @@ def normalize_item_fx(item: dict) -> dict:
         "sale_price_kzt": max(0.0, float(item.get("sale_price_kzt") or 0)),
         "duty_rate_pct": max(0.0, float(item.get("duty_rate_pct") or 0)),
         "truck_count": max(1, int(item.get("truck_count") or 1)),
-        "overhead": max(0.0, float(item.get("overhead") if item.get("overhead") is not None else 500)),
+        "overhead": max(0.0, float(item.get("overhead") or 0)),
         "extra_cost": max(0.0, float(item.get("extra_cost") or 0)),
         "country": str(item.get("country") or "").strip(),
         "tnved": str(item.get("tnved") or "").strip(),
@@ -412,26 +358,6 @@ def has_valid_items(items: list[dict]) -> bool:
     return bool(items) and any(item.get("name") for item in items)
 
 
-def on_calc_date_change() -> None:
-    st.session_state.fld_calc_date = format_date_input(st.session_state.fld_calc_date)
-
-
-def on_lot_start_change() -> None:
-    st.session_state.fld_lot_start = format_date_input(st.session_state.fld_lot_start)
-
-
-def on_lot_end_change() -> None:
-    st.session_state.fld_lot_end = format_date_input(st.session_state.fld_lot_end)
-
-
-def show_date_error(message: str | None) -> None:
-    if message:
-        st.markdown(
-            f'<p style="color:#b94e2b;font-size:0.85rem;margin:0.15rem 0 0.5rem;">{message}</p>',
-            unsafe_allow_html=True,
-        )
-
-
 def step_heading(number: str, title: str) -> None:
     st.markdown(
         f'<p class="step-title"><span class="num">{number}</span>{title}</p>',
@@ -439,15 +365,12 @@ def step_heading(number: str, title: str) -> None:
     )
 
 
-def fmt_money(value: float, suffix: str = " тнг") -> str:
-    try:
-        return f"{value:,.0f}{suffix}".replace(",", " ")
-    except (TypeError, ValueError):
-        return f"0{suffix}"
+def fmt_date(value) -> str:
+    return value.strftime("%d.%m.%Y") if value else ""
 
 
 init_state()
-is_foreign = st.session_state.get("fld_lot_type_radio", "Казахстан → Казахстан") != "Казахстан → Казахстан"
+lot_type_key = "lot_ids_" + st.session_state["lot_type"]
 
 # ------------------------------------------------- Плавающий калькулятор ---
 # Обычный арифметический калькулятор "для прикидок", не связанный с бизнес-
@@ -547,23 +470,20 @@ st.iframe(
 )
 
 # ---------------------------------------------------------------- Header ---
-lot_display = st.session_state.fld_lot_number.strip() or "не указан"
-date_display = st.session_state.fld_calc_date.strip() or date.today().strftime("%d.%m.%Y")
 st.markdown(
     f"""
 <div class="app-header-row">
   <div class="app-header-main">
-    <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
+    <div class="brand-row">
+      <span class="brand-mark">⚡</span>
+      <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
+    </div>
     <p class="app-header-sub">Калькулятор тендерных расчётов и подготовки Excel</p>
   </div>
   <div class="hdr-badges">
     <div class="hdr-badge">
-      <span class="hdr-badge-label">Лот</span>
-      <span class="hdr-badge-value">{lot_display}</span>
-    </div>
-    <div class="hdr-badge">
-      <span class="hdr-badge-label">Дата</span>
-      <span class="hdr-badge-value">{date_display}</span>
+      <span class="hdr-badge-label">Лотов в тендере</span>
+      <span class="hdr-badge-value">{len(st.session_state[lot_type_key])}</span>
     </div>
   </div>
 </div>
@@ -582,9 +502,86 @@ lot_type_choice = st.radio(
 lot_type = "foreign" if lot_type_choice != "Казахстан → Казахстан" else "kz"
 st.session_state["lot_type"] = lot_type
 
+lot_ids_key = f"lot_ids_{lot_type}"
+next_id_key = f"next_lot_id_{lot_type}"
+active_key = f"active_lot_{lot_type}"
+if st.session_state[active_key] not in st.session_state[lot_ids_key]:
+    st.session_state[active_key] = st.session_state[lot_ids_key][0]
+
+# ------------------------------------------------------------ Step: лоты ---
+st.divider()
+step_heading("02", "Лоты тендера")
+st.caption("Один тендер может включать несколько лотов — каждый лот получает "
+           "свой собственный блок расчёта (шапка + позиции + итоги), они "
+           "печатаются один под другим в одном Excel-файле.")
+
+
+def add_lot() -> None:
+    new_id = st.session_state[next_id_key]
+    st.session_state[lot_ids_key].append(new_id)
+    st.session_state[next_id_key] = new_id + 1
+    st.session_state[active_key] = new_id
+
+
+def remove_lot(lot_id: int) -> None:
+    ids = st.session_state[lot_ids_key]
+    if len(ids) <= 1:
+        return
+    ids.remove(lot_id)
+    if st.session_state[active_key] == lot_id:
+        st.session_state[active_key] = ids[0]
+
+
+lot_ids = st.session_state[lot_ids_key]
+tab_cols = st.columns(len(lot_ids) + 1)
+for i, lid in enumerate(lot_ids):
+    with tab_cols[i]:
+        is_active = lid == st.session_state[active_key]
+        if st.button(f"Лот {i + 1}", key=f"btn_select_lot_{lot_type}_{lid}",
+                     type="primary" if is_active else "secondary", width="stretch"):
+            st.session_state[active_key] = lid
+with tab_cols[-1]:
+    st.button("+ Лот", key=f"btn_add_lot_{lot_type}", on_click=add_lot, width="stretch")
+
+active_id = st.session_state[active_key]
+if len(lot_ids) > 1:
+    st.button(f"Удалить лот {lot_ids.index(active_id) + 1}",
+              key=f"btn_remove_lot_{lot_type}_{active_id}",
+              on_click=remove_lot, args=(active_id,))
+
+
+def k(field: str) -> str:
+    """Ключ виджета для поля `field` активного лота. Индексируется по
+    стабильному lot_id (не по позиции в списке!), поэтому добавление и
+    удаление лотов никогда не путает состояние виджетов между лотами -
+    ровно та же причина, по которой раньше терялись данные в таблице
+    позиций при слишком быстром вводе (см. items_*_editor ниже)."""
+    return f"lot_{lot_type}_{active_id}_{field}"
+
+
+st.session_state.setdefault(k("manager"), "")
+st.session_state.setdefault(k("supplier"), "")
+st.session_state.setdefault(k("lot_number"), "")
+st.session_state.setdefault(k("calc_date"), date.today())
+st.session_state.setdefault(k("lot_start"), None)
+st.session_state.setdefault(k("lot_end"), None)
+st.session_state.setdefault(k("lead_time_days"), 10)
+st.session_state.setdefault(k("markup_coef"), 1.5 if lot_type == "kz" else 1.2)
+st.session_state.setdefault(k("road_cost"), 0.0)
+st.session_state.setdefault(k("usd_rate"), 0.0)
+if lot_type == "foreign":
+    st.session_state.setdefault(k("delivery_days"), 30)
+    st.session_state.setdefault(k("vat_rate"), 16.0)
+    st.session_state.setdefault(k("currency"), "USD")
+    st.session_state.setdefault(k("fx_rate"), 0.0)
+
+items_state_key = f"items_{lot_type}_{active_id}"
+items_editor_key = f"items_{lot_type}_editor_{active_id}"
+st.session_state.setdefault(items_state_key, [])
+
 # ------------------------------------------------- Step 1: загрузка файла --
 st.divider()
-step_heading("02", "Загрузите документ")
+step_heading("03", f"Загрузите документ для лота {lot_ids.index(active_id) + 1}")
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader(
@@ -592,9 +589,10 @@ uploaded_file = st.file_uploader(
     type=["docx", "xlsx", "pdf"],
     accept_multiple_files=False,
 )
-st.caption("Распознавание достаёт наименование/ед.изм/кол-во/цену из документа. "
-           "Валюта, пошлина, кол-во машин, цена продажи, доп.расходы — это ваши "
-           "бизнес-решения, документ их не содержит, заполните их вручную на шаге ниже.")
+st.caption("Распознавание достаёт наименование/ед.изм/кол-во/цену из документа и добавит их "
+           "в позиции текущего лота. Валюта, пошлина, кол-во машин, цена продажи, "
+           "доп.расходы — это ваши бизнес-решения, документ их не содержит, заполните "
+           "их вручную в таблице ниже.")
 
 recognize_btn = st.button("Распознать", type="primary", disabled=uploaded_file is None)
 
@@ -606,20 +604,19 @@ if uploaded_file and recognize_btn:
             extracted_items = extract_items_free(tmp_path)
         st.session_state["raw_text"] = raw_text[:8000]
         if lot_type == "kz":
-            st.session_state["items_kz"] = [
+            st.session_state[items_state_key] = [
                 normalize_item_kz({"name": it.get("name"), "qty": it.get("qty"),
                                     "purchase_price_ddp": it.get("unit_price")})
                 for it in extracted_items
             ]
-            st.session_state.pop("items_kz_editor", None)
         else:
-            st.session_state["items_foreign"] = [
+            st.session_state[items_state_key] = [
                 normalize_item_fx({"name": it.get("name"), "unit": it.get("unit"),
                                     "qty": it.get("qty"), "price_fca": it.get("unit_price"),
                                     "duty_rate_pct": 5.0})
                 for it in extracted_items
             ]
-            st.session_state.pop("items_foreign_editor", None)
+        st.session_state.pop(items_editor_key, None)
         st.session_state["generated_file"] = None
         st.success(f"Найдено позиций: {len(extracted_items)}")
     except Exception as exc:
@@ -654,20 +651,19 @@ if st.button("Распознать через LLM", disabled=not api_key):
                 result = extract_items_llm(st.session_state["raw_text"], api_key=api_key)
             extracted_items = result.get("items", [])
             if lot_type == "kz":
-                st.session_state["items_kz"] = [
+                st.session_state[items_state_key] = [
                     normalize_item_kz({"name": it.get("name"), "qty": it.get("qty"),
                                         "purchase_price_ddp": it.get("unit_price")})
                     for it in extracted_items
                 ]
-                st.session_state.pop("items_kz_editor", None)
             else:
-                st.session_state["items_foreign"] = [
+                st.session_state[items_state_key] = [
                     normalize_item_fx({"name": it.get("name"), "unit": it.get("unit"),
                                         "qty": it.get("qty"), "price_fca": it.get("unit_price"),
                                         "duty_rate_pct": 5.0})
                     for it in extracted_items
                 ]
-                st.session_state.pop("items_foreign_editor", None)
+            st.session_state.pop(items_editor_key, None)
             st.session_state["generated_file"] = None
             st.success(f"LLM нашёл позиций: {len(extracted_items)}")
         except Exception as exc:
@@ -677,7 +673,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
-step_heading("03", "Проверьте позиции")
+step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
 st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
            "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
            "строка исчезнет сразу, без лишних шагов."
@@ -686,7 +682,7 @@ st.caption("Чтобы удалить строку: выделите её сле
               if lot_type == "foreign" else ""))
 
 if lot_type == "kz":
-    current_items = st.session_state["items_kz"] or [
+    current_items = st.session_state[items_state_key] or [
         {"name": "", "qty": 0, "purchase_price_ddp": 0.0, "extra_cost": 0.0}
     ]
     items_df = pd.DataFrame(current_items, columns=["name", "qty", "purchase_price_ddp",
@@ -695,107 +691,107 @@ if lot_type == "kz":
         items_df, width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
             "name": st.column_config.TextColumn("Наименование", width="large"),
-            "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1, format="%d"),
+            "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
+                                                  format="%d", width="small"),
             "purchase_price_ddp": st.column_config.NumberColumn(
-                "Цена закупки DDP (с НДС), тнг", min_value=0, step=100, format="%.2f"),
+                "Цена закупки DDP (с НДС), тнг", min_value=0, step=100,
+                format="%.2f", width="medium"),
             "extra_cost": st.column_config.NumberColumn(
-                "Доп.расходы (прочее), тнг", min_value=0, step=1000, format="%.2f"),
+                "Доп.расходы (прочее), тнг", min_value=0, step=1000,
+                format="%.2f", width="medium"),
         },
-        key="items_kz_editor",
+        key=items_editor_key,
     )
     # Keep every edited row (even ones without a name yet) in session_state so
     # a still-blank name doesn't wipe out qty/price the user already typed
     # into that row on the next rerun - only filter for actual use below.
-    st.session_state["items_kz"] = [
+    st.session_state[items_state_key] = [
         normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")
     ]
-    items = [it for it in st.session_state["items_kz"] if it["name"].strip()]
+    items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 else:
-    current_items = st.session_state["items_foreign"] or [
+    current_items = st.session_state[items_state_key] or [
         {"name": "", "unit": "", "qty": 0, "price_fca": 0.0, "sale_price_kzt": 0.0,
-         "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 500.0, "extra_cost": 0.0,
+         "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 0.0, "extra_cost": 0.0,
          "country": "", "tnved": "", "transport": ""}
     ]
     cols = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
             "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
     items_df = pd.DataFrame(current_items, columns=cols)
-    currency_now = st.session_state.get("fld_currency", "USD")
+    currency_now = st.session_state.get(k("currency"), "USD")
     edited_df = st.data_editor(
         items_df, width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
             "name": st.column_config.TextColumn("Наименование", width="large"),
             "unit": st.column_config.TextColumn("Ед.изм", width="small"),
-            "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1, format="%d"),
+            "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
+                                                  format="%d", width="small"),
             "price_fca": st.column_config.NumberColumn(
-                f"Цена FCA, {currency_now}/ед.", min_value=0, step=10, format="%.2f"),
+                f"Цена FCA, {currency_now}/ед.", min_value=0, step=10,
+                format="%.2f", width="medium"),
             "sale_price_kzt": st.column_config.NumberColumn(
-                "Цена продажи без НДС, тнг/шт", min_value=0, step=1000, format="%.2f"),
+                "Цена продажи без НДС, тнг/шт", min_value=0, step=1000,
+                format="%.2f", width="medium"),
             "duty_rate_pct": st.column_config.NumberColumn(
-                "Пошлина, %", min_value=0, max_value=100, step=0.5, format="%.1f"),
+                "Пошлина, %", min_value=0, max_value=100, step=0.5,
+                format="%.1f", width="small"),
             "truck_count": st.column_config.NumberColumn(
-                "Кол-во машин (=ГТД)", min_value=1, step=1, format="%d"),
+                "Кол-во машин (=ГТД)", min_value=1, step=1,
+                format="%d", width="medium"),
             "overhead": st.column_config.NumberColumn(
-                f"Накладные, {currency_now}", min_value=0, step=10, format="%.2f"),
+                f"Накладные, {currency_now} (нет единого стандарта — впишите свою сумму)",
+                min_value=0, step=10, format="%.2f", width="medium"),
             "extra_cost": st.column_config.NumberColumn(
-                f"Доп.расходы (прочее), {currency_now}", min_value=0, step=10, format="%.2f"),
-            "country": st.column_config.TextColumn("Страна происхождения", width="small"),
-            "tnved": st.column_config.TextColumn("ТН ВЭД", width="small"),
+                f"Доп.расходы (прочее), {currency_now}", min_value=0, step=10,
+                format="%.2f", width="medium"),
+            "country": st.column_config.TextColumn("Страна происхождения", width="medium"),
+            "tnved": st.column_config.TextColumn("ТН ВЭД", width="medium"),
             "transport": st.column_config.TextColumn(
                 "Кол-во подвижных / транспорт", width="medium"),
         },
-        key="items_foreign_editor",
+        key=items_editor_key,
     )
-    st.session_state["items_foreign"] = [
+    st.session_state[items_state_key] = [
         normalize_item_fx(row) for row in edited_df.fillna("").to_dict("records")
     ]
-    items = [it for it in st.session_state["items_foreign"] if it["name"].strip()]
+    items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 
 # --------------------------------------------------- Step 3: данные лота ---
 st.divider()
-step_heading("04", "Данные лота")
+step_heading("05", f"Данные лота {lot_ids.index(active_id) + 1}")
 
 left_col, right_col = st.columns(2)
 
 with left_col:
-    st.text_input("Менеджер", key="fld_manager", placeholder="Введите имя...")
-    st.text_input("Номер лота", key="fld_lot_number", placeholder="Введите номер лота...")
-    st.text_input("Дата расчёта", key="fld_calc_date", placeholder="дд.мм.гггг",
-                   on_change=on_calc_date_change)
-    if st.session_state.fld_calc_date:
-        show_date_error(validate_date(st.session_state.fld_calc_date, required=True)[1])
+    st.text_input("Менеджер", key=k("manager"), placeholder="Введите имя...")
+    st.text_input("Номер лота", key=k("lot_number"), placeholder="Введите номер лота...")
+    st.date_input("Дата расчёта", key=k("calc_date"), format="DD.MM.YYYY")
 
     if lot_type == "kz":
-        st.number_input("Сумма дорожных расходов, тнг", key="fld_road_cost_kz",
+        st.number_input("Сумма дорожных расходов, тнг", key=k("road_cost"),
                          min_value=0.0, step=1000.0, format="%.2f")
     else:
-        st.number_input(f"Дорога, всего по лоту, {st.session_state.fld_currency}", key="fld_road_cost_fx",
-                         min_value=0.0, step=1000.0, format="%.2f")
+        st.number_input(f"Дорога, всего по лоту, {st.session_state[k('currency')]}",
+                         key=k("road_cost"), min_value=0.0, step=1000.0, format="%.2f")
 
 with right_col:
-    st.text_input("Поставщик", key="fld_supplier", placeholder="Введите поставщика...")
+    st.text_input("Поставщик", key=k("supplier"), placeholder="Введите поставщика...")
     if lot_type == "kz":
-        st.number_input("Коэффициент наценки", key="fld_markup_coef_kz",
-                         min_value=0.01, step=0.05, format="%.2f")
+        st.number_input("Коэффициент наценки (> 1)", key=k("markup_coef"),
+                         min_value=1.01, step=0.05, format="%.2f")
     else:
-        st.number_input("Коэфф. наценки (DAP → Вход DAP)", key="fld_markup_coef_fx",
-                         min_value=0.01, step=0.05, format="%.2f")
-        st.number_input("НДС на ввоз, %", key="fld_vat_rate",
+        st.number_input("Коэфф. наценки (DAP → Вход DAP, > 1)", key=k("markup_coef"),
+                         min_value=1.01, step=0.05, format="%.2f")
+        st.number_input("НДС на ввоз, %", key=k("vat_rate"),
                          min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
 
-    st.text_input("Начало лота", key="fld_lot_start", placeholder="дд.мм.гггг",
-                   on_change=on_lot_start_change)
-    if st.session_state.fld_lot_start:
-        show_date_error(validate_date(st.session_state.fld_lot_start)[1])
+    st.date_input("Начало лота", key=k("lot_start"), format="DD.MM.YYYY")
+    st.date_input("Окончание лота", key=k("lot_end"), format="DD.MM.YYYY")
 
-    st.text_input("Окончание лота", key="fld_lot_end", placeholder="дд.мм.гггг",
-                   on_change=on_lot_end_change)
-    if st.session_state.fld_lot_end:
-        show_date_error(validate_date(st.session_state.fld_lot_end)[1])
-
-    st.number_input("Срок производства, дней", key="fld_lead_time_days",
+    st.number_input("Срок производства, дней", key=k("lead_time_days"),
                      min_value=1, step=1, format="%d")
     if lot_type == "foreign":
-        st.number_input("Срок поставки, дней", key="fld_delivery_days",
+        st.number_input("Срок поставки, дней", key=k("delivery_days"),
                          min_value=1, step=1, format="%d")
 
 # --- Курс валюты ---
@@ -804,7 +800,7 @@ def on_fetch_rate(currency: str, target_key: str) -> None:
     to write to st.session_state[target_key] here (unlike doing it after
     the number_input widget has already been created in the same run)."""
     try:
-        rate = fetch_rate_cached(currency)
+        rate = get_rate(currency)
         st.session_state[target_key] = float(rate)
         st.session_state["_rate_status"] = ("success", currency, float(rate))
     except Exception as exc:
@@ -814,26 +810,26 @@ def on_fetch_rate(currency: str, target_key: str) -> None:
 if lot_type == "kz":
     rate_left, rate_right = st.columns([3.2, 1])
     with rate_left:
-        st.number_input("Курс USD, тнг (для отчёта прибыли в $)", key="fld_usd_rate",
+        st.number_input("Курс USD, тнг (для отчёта прибыли в $)", key=k("usd_rate"),
                          min_value=0.0, step=0.01, format="%.2f")
     with rate_right:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        st.button("с Нацбанка РК", width="stretch", key="btn_rate_kz",
-                   on_click=on_fetch_rate, args=("USD", "fld_usd_rate"))
+        st.button("с Нацбанка РК", width="stretch", key=f"btn_rate_{lot_type}_{active_id}",
+                   on_click=on_fetch_rate, args=("USD", k("usd_rate")))
 else:
     cur_left, rate_left, rate_right = st.columns([1.1, 2.1, 1])
     with cur_left:
-        st.selectbox("Валюта закупки", ["USD", "RUB", "EUR"], key="fld_currency")
+        st.selectbox("Валюта закупки", ["USD", "RUB", "EUR"], key=k("currency"))
     with rate_left:
-        st.number_input(f"Курс {st.session_state.fld_currency}, тнг",
-                         key="fld_fx_rate", min_value=0.0, step=0.01, format="%.2f")
+        st.number_input(f"Курс {st.session_state[k('currency')]}, тнг",
+                         key=k("fx_rate"), min_value=0.0, step=0.01, format="%.2f")
     with rate_right:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        st.button("с Нацбанка РК", width="stretch", key="btn_rate_fx",
-                   on_click=on_fetch_rate, args=(st.session_state.fld_currency, "fld_fx_rate"))
+        st.button("с Нацбанка РК", width="stretch", key=f"btn_rate_{lot_type}_{active_id}",
+                   on_click=on_fetch_rate, args=(st.session_state[k("currency")], k("fx_rate")))
     countries_used = {it["country"].strip() for it in items if it.get("country")}
     suggested_currencies = {currency_for_country(c) for c in countries_used}
-    if suggested_currencies and suggested_currencies != {st.session_state.fld_currency}:
+    if suggested_currencies and suggested_currencies != {st.session_state[k("currency")]}:
         hint = ", ".join(sorted(suggested_currencies))
         st.caption(f"По странам происхождения в позициях обычно используют: {hint} — "
                    f"при необходимости переключите валюту выше.")
@@ -849,19 +845,71 @@ if _rate_status:
 # ------------------------------------------------------------ Generate -----
 st.divider()
 
-if st.button("Сформировать расчёт", type="primary", width="stretch"):
-    date_errors = [
-        validate_date(st.session_state.fld_calc_date, required=True)[1],
-        validate_date(st.session_state.fld_lot_start)[1] if st.session_state.fld_lot_start else None,
-        validate_date(st.session_state.fld_lot_end)[1] if st.session_state.fld_lot_end else None,
-    ]
-    date_errors = [e for e in date_errors if e]
+if st.button("Сформировать расчёт по всем лотам", type="primary", width="stretch"):
     template_path = TEMPLATE_PATHS[lot_type]
+    lots = []
+    errors = []
 
-    if date_errors:
-        st.error(date_errors[0])
-    elif not has_valid_items(items):
-        st.error("Добавьте хотя бы одну позицию с наименованием.")
+    for pos, lid in enumerate(lot_ids, start=1):
+
+        def lk(field: str, _lid=lid) -> str:
+            return f"lot_{lot_type}_{_lid}_{field}"
+
+        lot_items_raw = st.session_state.get(f"items_{lot_type}_{lid}", [])
+        lot_items = [it for it in lot_items_raw if it["name"].strip()]
+        if not lot_items:
+            errors.append(f"Лот {pos}: добавьте хотя бы одну позицию с наименованием.")
+            continue
+
+        calc_date = st.session_state.get(lk("calc_date"))
+        if not calc_date:
+            errors.append(f"Лот {pos}: укажите дату расчёта.")
+            continue
+
+        if lot_type == "kz":
+            usd_rate = float(st.session_state.get(lk("usd_rate"), 0))
+            if usd_rate <= 0:
+                errors.append(f"Лот {pos}: укажите курс USD (тг.).")
+                continue
+            header = {
+                "manager": st.session_state[lk("manager")].strip(),
+                "supplier": st.session_state[lk("supplier")].strip(),
+                "lot_number": st.session_state[lk("lot_number")].strip(),
+                "calc_date": fmt_date(calc_date),
+                "lot_start": fmt_date(st.session_state.get(lk("lot_start"))),
+                "lot_end": fmt_date(st.session_state.get(lk("lot_end"))),
+                "lead_time_days": int(st.session_state[lk("lead_time_days")]),
+                "markup_coef": float(st.session_state[lk("markup_coef")]),
+                "usd_rate": usd_rate,
+                "road_cost": float(st.session_state[lk("road_cost")]),
+            }
+        else:
+            fx_rate = float(st.session_state.get(lk("fx_rate"), 0))
+            currency = st.session_state.get(lk("currency"), "USD")
+            if fx_rate <= 0:
+                errors.append(f"Лот {pos}: укажите курс {currency} (тг.).")
+                continue
+            header = {
+                "manager": st.session_state[lk("manager")].strip(),
+                "supplier": st.session_state[lk("supplier")].strip(),
+                "lot_number": st.session_state[lk("lot_number")].strip(),
+                "calc_date": fmt_date(calc_date),
+                "lot_start": fmt_date(st.session_state.get(lk("lot_start"))),
+                "lot_end": fmt_date(st.session_state.get(lk("lot_end"))),
+                "lead_time_days": int(st.session_state[lk("lead_time_days")]),
+                "delivery_days": int(st.session_state[lk("delivery_days")]),
+                "markup_coef": float(st.session_state[lk("markup_coef")]),
+                "vat_rate": float(st.session_state[lk("vat_rate")]) / 100,
+                "road_cost": float(st.session_state[lk("road_cost")]),
+                "currency": currency,
+                "usd_rate": fx_rate,
+            }
+            lot_items = [{**it, "duty_rate": it["duty_rate_pct"] / 100} for it in lot_items]
+
+        lots.append({"header": header, "items": lot_items})
+
+    if errors:
+        st.error(errors[0])
     elif not os.path.exists(template_path):
         st.error(f"Шаблон {template_path} не найден.")
     else:
@@ -869,51 +917,15 @@ if st.button("Сформировать расчёт", type="primary", width="str
             with st.spinner("Формирую Excel..."):
                 out_path = tempfile.mktemp(suffix=".xlsx")
                 if lot_type == "kz":
-                    if st.session_state.fld_usd_rate <= 0:
-                        raise ValueError("Укажите курс USD (тг.)")
-                    header = {
-                        "manager": st.session_state.fld_manager.strip(),
-                        "supplier": st.session_state.fld_supplier.strip(),
-                        "lot_number": st.session_state.fld_lot_number.strip(),
-                        "calc_date": format_date_input(st.session_state.fld_calc_date),
-                        "lot_start": format_date_input(st.session_state.fld_lot_start),
-                        "lot_end": format_date_input(st.session_state.fld_lot_end),
-                        "lead_time_days": int(st.session_state.fld_lead_time_days),
-                        "markup_coef": float(st.session_state.fld_markup_coef_kz),
-                        "usd_rate": float(st.session_state.fld_usd_rate),
-                        "road_cost": float(st.session_state.fld_road_cost_kz),
-                    }
-                    fill_multi(template_path, out_path, header, items)
+                    fill_lots_kz(template_path, out_path, lots)
                 else:
-                    if st.session_state.fld_fx_rate <= 0:
-                        raise ValueError(f"Укажите курс {st.session_state.fld_currency} (тг.)")
-                    rate = float(st.session_state.fld_fx_rate)
-                    header = {
-                        "manager": st.session_state.fld_manager.strip(),
-                        "supplier": st.session_state.fld_supplier.strip(),
-                        "lot_number": st.session_state.fld_lot_number.strip(),
-                        "calc_date": format_date_input(st.session_state.fld_calc_date),
-                        "lot_start": format_date_input(st.session_state.fld_lot_start),
-                        "lot_end": format_date_input(st.session_state.fld_lot_end),
-                        "lead_time_days": int(st.session_state.fld_lead_time_days),
-                        "delivery_days": int(st.session_state.fld_delivery_days),
-                        "markup_coef": float(st.session_state.fld_markup_coef_fx),
-                        "vat_rate": float(st.session_state.fld_vat_rate) / 100,
-                        "road_cost": float(st.session_state.fld_road_cost_fx),
-                        "currency": st.session_state.fld_currency,
-                        "usd_rate": rate,
-                    }
-                    fill_items = [
-                        {**it, "duty_rate": it["duty_rate_pct"] / 100}
-                        for it in items
-                    ]
-                    fill_multi_foreign(template_path, out_path, header, fill_items)
+                    fill_lots_foreign(template_path, out_path, lots)
 
                 with open(out_path, "rb") as f:
                     st.session_state["generated_file"] = f.read()
                 os.unlink(out_path)
-            st.session_state["generated_name"] = f"расчёт_{st.session_state.fld_lot_number.strip() or 'лот'}.xlsx"
-            st.success("Готово. Скачайте файл ниже.")
+            st.session_state["generated_name"] = f"расчёт_{len(lots)}_лотов.xlsx"
+            st.success(f"Готово, лотов: {len(lots)}. Скачайте файл ниже.")
         except Exception as exc:
             st.error(f"Ошибка при формировании: {exc}")
 

@@ -112,7 +112,7 @@ def compute_foreign(header: dict, items: list[dict]) -> dict:
         o = (m + n) * vat_rate  # НДС вход
         truck_count = item["truck_count"]
         q = (25950 / rate) * truck_count  # Сборы (тенге -> валюта закупки)
-        overhead = item.get("overhead") if item.get("overhead") is not None else 500
+        overhead = item.get("overhead") or 0
         p = overhead
         extra_cost = item.get("extra_cost") or 0
         r = (m + n + o + q + p + extra_cost) / e  # DDP цена/шт (валюта закупки)
