@@ -62,9 +62,13 @@ st.markdown(
     position: relative;
     background: linear-gradient(180deg, var(--paper) 0%, var(--paper-2) 100%);
     border-radius: 14px;
-    padding: 1.4rem 2.25rem 2.5rem;
+    /* clamp() instead of fixed rem values: padding eases off on narrow
+       viewports instead of eating into the usable width, and max-width
+       backs off from a hard 960px so the card never touches the edges on
+       medium-width windows or phones. */
+    padding: clamp(1rem, 3vw, 1.4rem) clamp(1rem, 4vw, 2.25rem) clamp(1.4rem, 4vw, 2.5rem);
     margin-top: 0.6rem;
-    max-width: 960px;
+    max-width: min(960px, 94vw);
     box-shadow:
       0 2px 0 rgba(255, 255, 255, 0.5) inset,
       0 32px 64px rgba(0, 0, 0, 0.45),
@@ -90,7 +94,8 @@ st.markdown(
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    gap: 1.25rem;
+    flex-wrap: wrap;
+    gap: 0.6rem 1.25rem;
     margin-bottom: 0.35rem;
     padding-top: 0.2rem;
   }
@@ -427,10 +432,10 @@ st.iframe(
 </style>
 <div id="calc-shell">
   <div id="calc-box">
-    <div id="calc-head" onclick="var b=document.getElementById('calc-body'); var t=document.getElementById('calc-toggle'); b.classList.toggle('collapsed'); t.textContent = b.classList.contains('collapsed') ? '▸' : '▾';">
-      <span>Калькулятор</span><span id="calc-toggle">▾</span>
+    <div id="calc-head">
+      <span>Калькулятор</span><span id="calc-toggle">▸</span>
     </div>
-    <div id="calc-body">
+    <div id="calc-body" class="collapsed">
       <div id="calc-screen">0</div>
       <div id="calc-grid"></div>
     </div>
@@ -488,16 +493,59 @@ st.iframe(
   // Streamlit layout. Same-origin iframe, so parent DOM access is allowed.
   try {
     var fe = window.frameElement;
+    var shell = document.getElementById('calc-shell');
+    var body = document.getElementById('calc-body');
+    var toggle = document.getElementById('calc-toggle');
+    var head = document.getElementById('calc-head');
     if (fe) {
       fe.style.position = 'fixed';
-      fe.style.top = '0';
-      fe.style.right = '0';
-      fe.style.width = '260px';
-      fe.style.height = '100vh';
+      fe.style.top = '110px';
+      fe.style.right = '22px';
       fe.style.border = 'none';
       fe.style.zIndex = 999999;
       fe.style.pointerEvents = 'auto';
-      document.getElementById('calc-shell').style.pointerEvents = 'auto';
+      shell.style.pointerEvents = 'auto';
+
+      // THE ACTUAL BUG this fixes: the iframe used to be a fixed 260px x
+      // 100vh rectangle regardless of what was visibly drawn inside it.
+      // Iframes can't be "clicked through" in their empty areas - so that
+      // whole strip, top of page to bottom, silently ate clicks meant for
+      // the form underneath on any viewport where the form's right edge
+      // fell inside those 260px. Sizing the iframe to the widget's *actual*
+      // rendered footprint (and re-measuring on toggle/resize) means the
+      // dead click zone is never bigger than the visible calculator.
+      function fitFrame() {
+        // window.innerWidth here would be the *iframe's own* width (which
+        // we ourselves keep shrinking to fit the widget) - not the actual
+        // browser window. window.parent is the real page, same-origin so
+        // readable from here (same trick already used for number-input
+        // auto-select below).
+        var narrow = window.parent.innerWidth < 640;
+        fe.style.display = narrow ? 'none' : 'block';
+        if (narrow) return;
+        var rect = shell.getBoundingClientRect();
+        fe.style.width = Math.ceil(rect.width) + 'px';
+        fe.style.height = Math.ceil(rect.height) + 'px';
+      }
+
+      head.addEventListener('click', function () {
+        var collapsed = body.classList.toggle('collapsed');
+        toggle.textContent = collapsed ? '▸' : '▾';
+        fitFrame();
+      });
+
+      // Starts collapsed (see the HTML above) specifically so the default
+      // dead-click footprint is just the small header pill, not the full
+      // 220px-tall open calculator - opening it is then an explicit choice.
+      fitFrame();
+      var resizeTimer = null;
+      // Same reasoning as above: listening on window (the iframe) would
+      // only ever fire because of our own fitFrame() resizing it - the
+      // real resize events happen on the parent browser window.
+      window.parent.addEventListener('resize', function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(fitFrame, 100);
+      });
     }
   } catch (e) {}
 })();
