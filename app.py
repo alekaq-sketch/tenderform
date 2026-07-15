@@ -193,7 +193,8 @@ st.markdown(
 
   div[data-testid="stTextInput"] label,
   div[data-testid="stNumberInput"] label,
-  div[data-testid="stDateInput"] label {
+  div[data-testid="stDateInput"] label,
+  div[data-testid="stSelectbox"] label {
     font-size: 0.84rem !important;
     font-weight: 500 !important;
     color: var(--ink-soft) !important;
@@ -215,6 +216,23 @@ st.markdown(
   div[data-testid="stTextArea"] textarea:focus {
     border-color: var(--ember) !important;
     box-shadow: 0 0 0 1px var(--ember) !important;
+  }
+  /* "Валюта закупки" selectbox: without this it keeps Streamlit's theme
+     secondaryBackgroundColor (a pale blue), which reads as an odd, unrelated
+     tint sitting right next to the plain-white text/number/date fields
+     around it. Matched to the same white + var(--line) treatment as those. */
+  div[data-testid="stSelectbox"] > div > div {
+    border-radius: 7px !important;
+    border-color: var(--line) !important;
+    background: #fff !important;
+  }
+  div[data-testid="stSelectbox"] > div > div:hover {
+    border-color: var(--ember) !important;
+  }
+  div[data-testid="stSelectbox"] span {
+    color: var(--ink) !important;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.9rem;
   }
 
   div[data-testid="stFileUploader"] label { display: none; }
@@ -512,17 +530,15 @@ st.iframe(
       // whole strip, top of page to bottom, silently ate clicks meant for
       // the form underneath on any viewport where the form's right edge
       // fell inside those 260px. Sizing the iframe to the widget's *actual*
-      // rendered footprint (and re-measuring on toggle/resize) means the
-      // dead click zone is never bigger than the visible calculator.
+      // rendered footprint (re-measured on toggle) means the dead click
+      // zone is never bigger than the visible calculator. This only reads
+      // shell's own bounding box - entirely inside this iframe's own DOM,
+      // no cross-frame access needed, so it can't silently fail the way a
+      // window.parent read could in some hosting setups (that's what broke
+      // the calculator outright in an earlier version of this fix - it hid
+      // itself whenever it couldn't confirm the browser window was wide
+      // enough, and that check itself was unreliable).
       function fitFrame() {
-        // window.innerWidth here would be the *iframe's own* width (which
-        // we ourselves keep shrinking to fit the widget) - not the actual
-        // browser window. window.parent is the real page, same-origin so
-        // readable from here (same trick already used for number-input
-        // auto-select below).
-        var narrow = window.parent.innerWidth < 640;
-        fe.style.display = narrow ? 'none' : 'block';
-        if (narrow) return;
         var rect = shell.getBoundingClientRect();
         fe.style.width = Math.ceil(rect.width) + 'px';
         fe.style.height = Math.ceil(rect.height) + 'px';
@@ -538,14 +554,6 @@ st.iframe(
       // dead-click footprint is just the small header pill, not the full
       // 220px-tall open calculator - opening it is then an explicit choice.
       fitFrame();
-      var resizeTimer = null;
-      // Same reasoning as above: listening on window (the iframe) would
-      // only ever fire because of our own fitFrame() resizing it - the
-      // real resize events happen on the parent browser window.
-      window.parent.addEventListener('resize', function () {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(fitFrame, 100);
-      });
     }
   } catch (e) {}
 })();
@@ -644,6 +652,13 @@ def remove_lot(lot_id: int) -> None:
     ids.remove(lot_id)
     if st.session_state[active_key] == lot_id:
         st.session_state[active_key] = ids[0]
+    # lot_id is never reused (next_lot_id only ever increases), so leaving
+    # this behind wouldn't cause a data mix-up with a future lot - it's pure
+    # housekeeping so session_state doesn't grow unbounded over a long
+    # session with a lot of add/remove churn.
+    st.session_state.get(f"lot_header_store_{lot_type}", {}).pop(lot_id, None)
+    for _prefix in (f"items_{lot_type}_", f"items_{lot_type}_editor_", f"items_{lot_type}_seed_"):
+        st.session_state.pop(f"{_prefix}{lot_id}", None)
 
 
 lot_ids = st.session_state[lot_ids_key]
@@ -680,26 +695,68 @@ def k(field: str) -> str:
     return f"lot_{lot_type}_{active_id}_{field}"
 
 
-st.session_state.setdefault(k("manager"), "")
-st.session_state.setdefault(k("supplier"), "")
-st.session_state.setdefault(k("lot_number"), "")
-st.session_state.setdefault(k("calc_date"), date.today())
-st.session_state.setdefault(k("lot_start"), None)
-st.session_state.setdefault(k("lot_end"), None)
-st.session_state.setdefault(k("lead_time_days"), 10)
-st.session_state.setdefault(k("markup_coef"), 1.5 if lot_type == "kz" else 1.2)
-st.session_state.setdefault(k("road_cost"), 0.0)
-st.session_state.setdefault(k("usd_rate"), 0.0)
-if lot_type == "foreign":
-    st.session_state.setdefault(k("delivery_days"), 30)
-    st.session_state.setdefault(k("vat_rate"), 16.0)
-    st.session_state.setdefault(k("currency"), "USD")
-    st.session_state.setdefault(k("fx_rate"), 0.0)
+def default_lot_header(for_type: str) -> dict:
+    """Единственное место, где перечислены дефолты полей шапки лота -
+    используется и при создании нового лота, и кнопкой «Сбросить» ниже,
+    чтобы эти два места не могли разойтись."""
+    defaults = {
+        "manager": "", "supplier": "", "lot_number": "",
+        "calc_date": date.today(), "lot_start": None, "lot_end": None,
+        "lead_time_days": 10, "markup_coef": 1.5 if for_type == "kz" else 1.2,
+        "road_cost": 0.0, "usd_rate": 0.0,
+    }
+    if for_type == "foreign":
+        defaults.update(
+            {"delivery_days": 30, "vat_rate": 16.0, "currency": "USD", "fx_rate": 0.0})
+    return defaults
+
+
+# Streamlit quietly discards a widget's session_state value once that
+# widget stops being instantiated in a script run (its internal "stale
+# widget" cleanup - see _remove_stale_widgets in Streamlit's own
+# session_state.py). Since only the ACTIVE lot's header widgets render each
+# run, switching away from a lot and back used to reset every field on it
+# straight back to blank/default - the widget's own key was never a safe
+# place to durably keep a lot's data. lot_header_store is a plain dict (not
+# itself ever passed as a widget key) that isn't subject to that cleanup;
+# widgets are (re-)seeded from it below and synced back into it once they've
+# rendered (see the sync block right after the currency/rate section).
+# Exactly the same reasoning that already made the items table resilient to
+# this - see items_seed_key elsewhere in this file.
+lot_header_store_key = f"lot_header_store_{lot_type}"
+st.session_state.setdefault(lot_header_store_key, {})
+lot_header_store = st.session_state[lot_header_store_key]
+if active_id not in lot_header_store:
+    lot_header_store[active_id] = default_lot_header(lot_type)
+
+for _field, _default in lot_header_store[active_id].items():
+    st.session_state.setdefault(k(_field), _default)
 
 items_state_key = f"items_{lot_type}_{active_id}"
 items_editor_key = f"items_{lot_type}_editor_{active_id}"
 items_seed_key = f"items_{lot_type}_seed_{active_id}"
 st.session_state.setdefault(items_state_key, [])
+
+
+def reset_lot_header() -> None:
+    """on_click, not inline logic - by the time a button placed after these
+    widgets could run inline code, the widgets have already been instantiated
+    this script run and directly overwriting their session_state keys would
+    raise a StreamlitAPIException. on_click callbacks run before the rerun
+    that re-instantiates them, so it's the safe place to reset a widget's
+    backing value (same pattern as add_lot/remove_lot/on_fetch_rate)."""
+    defaults = default_lot_header(lot_type)
+    lot_header_store[active_id] = defaults
+    for _field, _value in defaults.items():
+        st.session_state[k(_field)] = _value
+
+
+def reset_items() -> None:
+    """Same on_click timing requirement as reset_lot_header - items_editor_key
+    is itself a data_editor widget key."""
+    st.session_state[items_state_key] = []
+    st.session_state.pop(items_seed_key, None)
+    st.session_state.pop(items_editor_key, None)
 
 # ------------------------------------------------- Step 1: загрузка файла --
 st.divider()
@@ -797,7 +854,13 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
-step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
+items_heading_col, items_reset_col = st.columns([5, 1])
+with items_heading_col:
+    step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
+with items_reset_col:
+    st.button("Сбросить", key=f"btn_reset_items_{lot_type}_{active_id}",
+              on_click=reset_items, width="stretch",
+              help="Очистить таблицу позиций этого лота до одной пустой строки.")
 st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
            "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
            "строка исчезнет сразу, без лишних шагов."
@@ -901,7 +964,14 @@ else:
 
 # --------------------------------------------------- Step 3: данные лота ---
 st.divider()
-step_heading("05", f"Данные лота {lot_ids.index(active_id) + 1}")
+header_heading_col, header_reset_col = st.columns([5, 1])
+with header_heading_col:
+    step_heading("05", f"Данные лота {lot_ids.index(active_id) + 1}")
+with header_reset_col:
+    st.button("Сбросить", key=f"btn_reset_header_{lot_type}_{active_id}",
+              on_click=reset_lot_header, width="stretch",
+              help="Сбросить менеджера, заказчика, даты, наценку, курс и "
+                   "остальные поля этого лота до значений по умолчанию.")
 
 left_col, right_col = st.columns(2)
 
@@ -977,6 +1047,12 @@ else:
         st.caption(f"По странам происхождения в позициях обычно используют: {hint} — "
                    f"при необходимости переключите валюту выше.")
 
+# All header widgets for this lot have rendered by now - copy their current
+# values into the durable store so they survive the next time this lot's
+# widgets DON'T render (i.e. as soon as another lot becomes active).
+for _field in lot_header_store[active_id]:
+    lot_header_store[active_id][_field] = st.session_state[k(_field)]
+
 _rate_status = st.session_state.pop("_rate_status", None)
 if _rate_status:
     _kind, _cur, _payload = _rate_status
@@ -994,9 +1070,15 @@ if st.button("Сформировать расчёт по всем лотам", t
     errors = []
 
     for pos, lid in enumerate(lot_ids, start=1):
-
-        def lk(field: str, _lid=lid) -> str:
-            return f"lot_{lot_type}_{_lid}_{field}"
+        # Read from lot_header_store, NOT st.session_state[f"lot_{lot_type}_{lid}_..."]
+        # directly - only the *active* lot's widgets are instantiated this
+        # run, and Streamlit discards a widget's value the moment it stops
+        # being rendered (see the comment by lot_header_store's definition
+        # above). Generate loops over every lot in the tender, so reading
+        # the raw widget key would silently read stale/missing data for
+        # every lot except whichever one happened to be on screen when the
+        # button was clicked.
+        fields = lot_header_store.get(lid, {})
 
         lot_items_raw = st.session_state.get(f"items_{lot_type}_{lid}", [])
         lot_items = [it for it in lot_items_raw if it["name"].strip()]
@@ -1004,31 +1086,31 @@ if st.button("Сформировать расчёт по всем лотам", t
             errors.append(f"Лот {pos}: добавьте хотя бы одну позицию с наименованием.")
             continue
 
-        calc_date = st.session_state.get(lk("calc_date"))
+        calc_date = fields.get("calc_date")
         if not calc_date:
             errors.append(f"Лот {pos}: укажите дату расчёта.")
             continue
 
         if lot_type == "kz":
-            usd_rate = float(st.session_state.get(lk("usd_rate"), 0))
+            usd_rate = float(fields.get("usd_rate") or 0)
             if usd_rate <= 0:
                 errors.append(f"Лот {pos}: укажите курс USD (тг.).")
                 continue
             header = {
-                "manager": st.session_state[lk("manager")].strip(),
-                "supplier": st.session_state[lk("supplier")].strip(),
-                "lot_number": st.session_state[lk("lot_number")].strip(),
+                "manager": fields.get("manager", "").strip(),
+                "supplier": fields.get("supplier", "").strip(),
+                "lot_number": fields.get("lot_number", "").strip(),
                 "calc_date": fmt_date(calc_date),
-                "lot_start": fmt_date(st.session_state.get(lk("lot_start"))),
-                "lot_end": fmt_date(st.session_state.get(lk("lot_end"))),
-                "lead_time_days": int(st.session_state[lk("lead_time_days")]),
-                "markup_coef": float(st.session_state[lk("markup_coef")]),
+                "lot_start": fmt_date(fields.get("lot_start")),
+                "lot_end": fmt_date(fields.get("lot_end")),
+                "lead_time_days": int(fields.get("lead_time_days", 10)),
+                "markup_coef": float(fields.get("markup_coef", 1.5)),
                 "usd_rate": usd_rate,
-                "road_cost": float(st.session_state[lk("road_cost")]),
+                "road_cost": float(fields.get("road_cost", 0)),
             }
         else:
-            fx_rate = float(st.session_state.get(lk("fx_rate"), 0))
-            currency = st.session_state.get(lk("currency"), "USD")
+            fx_rate = float(fields.get("fx_rate") or 0)
+            currency = fields.get("currency", "USD")
             if fx_rate <= 0:
                 errors.append(f"Лот {pos}: укажите курс {currency} (тг.).")
                 continue
@@ -1042,17 +1124,17 @@ if st.button("Сформировать расчёт по всем лотам", t
                                f"иначе в Excel формула дороги поделит на нулевую сумму закупки.")
                 continue
             header = {
-                "manager": st.session_state[lk("manager")].strip(),
-                "supplier": st.session_state[lk("supplier")].strip(),
-                "lot_number": st.session_state[lk("lot_number")].strip(),
+                "manager": fields.get("manager", "").strip(),
+                "supplier": fields.get("supplier", "").strip(),
+                "lot_number": fields.get("lot_number", "").strip(),
                 "calc_date": fmt_date(calc_date),
-                "lot_start": fmt_date(st.session_state.get(lk("lot_start"))),
-                "lot_end": fmt_date(st.session_state.get(lk("lot_end"))),
-                "lead_time_days": int(st.session_state[lk("lead_time_days")]),
-                "delivery_days": int(st.session_state[lk("delivery_days")]),
-                "markup_coef": float(st.session_state[lk("markup_coef")]),
-                "vat_rate": float(st.session_state[lk("vat_rate")]) / 100,
-                "road_cost": float(st.session_state[lk("road_cost")]),
+                "lot_start": fmt_date(fields.get("lot_start")),
+                "lot_end": fmt_date(fields.get("lot_end")),
+                "lead_time_days": int(fields.get("lead_time_days", 10)),
+                "delivery_days": int(fields.get("delivery_days", 30)),
+                "markup_coef": float(fields.get("markup_coef", 1.2)),
+                "vat_rate": float(fields.get("vat_rate", 16.0)) / 100,
+                "road_cost": float(fields.get("road_cost", 0)),
                 "currency": currency,
                 "usd_rate": fx_rate,
             }
@@ -1061,7 +1143,7 @@ if st.button("Сформировать расчёт по всем лотам", t
         lots.append({"header": header, "items": lot_items})
 
     if errors:
-        st.error(errors[0])
+        st.error("\n\n".join(errors))
     elif not os.path.exists(template_path):
         st.error(f"Шаблон {template_path} не найден.")
     else:
@@ -1088,3 +1170,51 @@ if st.session_state.get("generated_file"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary", width="stretch",
     )
+
+# --------------------------------------------------- Новый тендер / сброс --
+st.divider()
+step_heading("06", "Новый тендер")
+st.caption("Полностью очищает форму — все лоты, позиции и данные текущего "
+           "тендера — чтобы начать заполнение следующего с чистого листа.")
+
+
+def reset_full_form() -> None:
+    """on_click, not inline - clears session_state entirely before the next
+    rerun. init_state() (called at module top-level on every run) only uses
+    setdefault(), so without wiping the keys here first the 'reset' would be
+    a no-op: every value would already exist and setdefault would leave it
+    untouched."""
+    for _key in list(st.session_state.keys()):
+        del st.session_state[_key]
+
+
+def start_reset_confirm() -> None:
+    st.session_state["confirm_reset_all"] = True
+
+
+def cancel_reset_confirm() -> None:
+    st.session_state["confirm_reset_all"] = False
+
+
+st.session_state.setdefault("confirm_reset_all", False)
+
+if not st.session_state["confirm_reset_all"]:
+    # on_click, same as everywhere else in this file - NOT an inline
+    # `if st.button(...): ...; st.rerun()`. An explicit st.rerun() call mid-
+    # script triggers Streamlit's rerun machinery a second, awkward way that
+    # doesn't compose cleanly with the rest of this page's widgets (a plain
+    # button click already reruns the script once on its own - on_click just
+    # lets us mutate session_state safely beforehand, exactly like
+    # add_lot/remove_lot/on_fetch_rate above).
+    st.button("Начать новый тендер (очистить всё)",
+              key="btn_reset_all_start", width="stretch", on_click=start_reset_confirm)
+else:
+    st.warning("Все лоты, позиции и данные текущего тендера будут удалены "
+               "без возможности восстановления. Скачали Excel? Тогда можно очищать.")
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        st.button("Да, очистить всё", key="btn_reset_all_confirm", type="primary",
+                   width="stretch", on_click=reset_full_form)
+    with cancel_col:
+        st.button("Отмена", key="btn_reset_all_cancel", width="stretch",
+                   on_click=cancel_reset_confirm)
