@@ -569,6 +569,7 @@ if lot_type == "foreign":
 
 items_state_key = f"items_{lot_type}_{active_id}"
 items_editor_key = f"items_{lot_type}_editor_{active_id}"
+items_seed_key = f"items_{lot_type}_seed_{active_id}"
 st.session_state.setdefault(items_state_key, [])
 
 # ------------------------------------------------- Step 1: загрузка файла --
@@ -609,6 +610,7 @@ if uploaded_file and recognize_btn:
                 for it in extracted_items
             ]
         st.session_state.pop(items_editor_key, None)
+        st.session_state.pop(items_seed_key, None)
         st.session_state["generated_file"] = None
         st.success(f"Найдено позиций: {len(extracted_items)}")
     except Exception as exc:
@@ -656,6 +658,7 @@ if st.button("Распознать через LLM", disabled=not api_key):
                     for it in extracted_items
                 ]
             st.session_state.pop(items_editor_key, None)
+            st.session_state.pop(items_seed_key, None)
             st.session_state["generated_file"] = None
             st.success(f"LLM нашёл позиций: {len(extracted_items)}")
         except Exception as exc:
@@ -666,14 +669,9 @@ st.markdown("</div>", unsafe_allow_html=True)
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
 step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
-st.caption("Новую строку добавляйте кнопкой «+ Добавить позицию» ниже, а не "
-           "вводом прямо в последнюю пустую строку таблицы — ввод в неё "
-           "иногда не сохраняется (известная особенность таблиц Streamlit: "
-           "правка и добавление строки, отправленные одним нажатием Enter, "
-           "могут разминуться). Через кнопку строка сначала создаётся "
-           "пустой, а потом в неё можно спокойно вписывать значения. Чтобы "
-           "удалить строку: выделите её слева (наведите на номер строки) и "
-           "нажмите на значок корзины сверху таблицы, либо клавишу Delete."
+st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
+           "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
+           "строка исчезнет сразу, без лишних шагов."
            + (" Страна происхождения / ТН ВЭД / транспорт указываются на каждый "
               "товар отдельно — они могут отличаться от позиции к позиции."
               if lot_type == "foreign" else ""))
@@ -683,25 +681,31 @@ DEFAULT_ROW_FX = {"name": "", "unit": "", "qty": 0, "price_fca": 0.0, "sale_pric
                    "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 0.0, "extra_cost": 0.0,
                    "country": "", "tnved": "", "transport": ""}
 
-
-def add_item_row(default_row: dict) -> None:
-    st.session_state[items_state_key].append(dict(default_row))
-
-
-st.button("+ Добавить позицию", key=f"btn_add_item_{items_state_key}",
-          on_click=add_item_row, args=(DEFAULT_ROW_KZ if lot_type == "kz" else DEFAULT_ROW_FX,))
-
 if lot_type == "kz":
-    current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_KZ)]
-    items_df = pd.DataFrame(current_items, columns=["name", "qty", "purchase_price_ddp",
-                                                      "extra_cost"])
+    # THE ACTUAL BUG (previous "add row" workaround didn't touch this): a
+    # fresh pd.DataFrame was built from items_state_key and handed to
+    # data_editor(key=...) on *every single rerun*, including the very
+    # rerun that a keystroke inside the editor itself triggers. Streamlit
+    # treats a freshly-built `data` argument as a new snapshot to layer the
+    # user's pending edit on top of - round-tripping the value through
+    # normalize_item_kz on every keystroke made that snapshot just different
+    # enough, often enough, that the grid would revert the in-flight edit
+    # and only keep it on the next identical attempt. Building the seed
+    # dataframe once and never rebuilding it (Streamlit owns all further
+    # state for this key) removes the feedback loop entirely - the editor
+    # is the single source of truth for what's on screen; items_state_key
+    # is only a read-only mirror kept in sync for validation/export below.
+    if items_seed_key not in st.session_state:
+        current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_KZ)]
+        st.session_state[items_seed_key] = pd.DataFrame(
+            current_items, columns=["name", "qty", "purchase_price_ddp", "extra_cost"])
     # Streamlit's "small"/"medium"/"large" width categories are rough hints,
     # not sized to the label's actual text - a long header still truncates
     # inside a "medium" column. Explicit pixel widths (supported alongside
     # the categories) let each column fit its own header; anything that
     # doesn't fit on one line goes into a help= tooltip instead.
     edited_df = st.data_editor(
-        items_df, width="stretch", hide_index=True, num_rows="dynamic",
+        st.session_state[items_seed_key], width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
             "name": st.column_config.TextColumn("Наименование", width=280),
             "qty": st.column_config.NumberColumn("Кол-во", min_value=0, step=1,
@@ -715,21 +719,22 @@ if lot_type == "kz":
         },
         key=items_editor_key,
     )
-    # Keep every edited row (even ones without a name yet) in session_state so
-    # a still-blank name doesn't wipe out qty/price the user already typed
-    # into that row on the next rerun - only filter for actual use below.
+    # Read-only mirror for validation/export (Generate button, currency
+    # hint) - never fed back into the editor above, so it can't create the
+    # feedback loop described up top.
     st.session_state[items_state_key] = [
         normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")
     ]
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 else:
-    current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_FX)]
     cols = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
             "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
-    items_df = pd.DataFrame(current_items, columns=cols)
+    if items_seed_key not in st.session_state:
+        current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_FX)]
+        st.session_state[items_seed_key] = pd.DataFrame(current_items, columns=cols)
     currency_now = st.session_state.get(k("currency"), "USD")
     edited_df = st.data_editor(
-        items_df, width="stretch", hide_index=True, num_rows="dynamic",
+        st.session_state[items_seed_key], width="stretch", hide_index=True, num_rows="dynamic",
         column_config={
             "name": st.column_config.TextColumn("Наименование", width=280),
             "unit": st.column_config.TextColumn("Ед.изм", width=80),
