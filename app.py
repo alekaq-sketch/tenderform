@@ -1,5 +1,6 @@
 """Heat Energy - Streamlit tender calculator."""
 
+import base64
 import os
 import tempfile
 from datetime import date
@@ -33,23 +34,23 @@ st.markdown(
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&display=swap');
 
   :root {
-    --ink: #1e252d;
-    --ink-soft: #5c6773;
-    --paper: #faf6ec;
-    --paper-2: #f2ebdb;
-    --line: #ddd2ae;
-    --teal: #186b5d;
-    --teal-deep: #124f45;
-    --ember: #c17a3f;
-    --ember-soft: #e4a468;
+    --ink: #14213f;
+    --ink-soft: #55658c;
+    --paper: #f4f8ff;
+    --paper-2: #e7f0ff;
+    --line: #c9dbf7;
+    --teal: #1c6fe0;
+    --teal-deep: #0d3f92;
+    --ember: #17a3f5;
+    --ember-soft: #7cc9fb;
   }
 
   .stApp {
-    background-color: #0b1220;
+    background-color: #0a1220;
     background-image:
-      radial-gradient(ellipse 80% 60% at 12% 15%, rgba(24, 107, 93, 0.24) 0%, transparent 55%),
-      radial-gradient(ellipse 65% 55% at 88% 80%, rgba(193, 122, 63, 0.14) 0%, transparent 52%),
-      linear-gradient(160deg, #0b1220 0%, #121c2a 40%, #182132 75%, #0e1622 100%);
+      radial-gradient(ellipse 80% 60% at 12% 15%, rgba(28, 111, 224, 0.26) 0%, transparent 55%),
+      radial-gradient(ellipse 65% 55% at 88% 80%, rgba(23, 163, 245, 0.16) 0%, transparent 52%),
+      linear-gradient(160deg, #0a1220 0%, #0e1c38 40%, #142b52 75%, #0a1626 100%);
     background-attachment: fixed;
     font-family: "Inter", sans-serif;
   }
@@ -92,6 +93,18 @@ st.markdown(
     gap: 1.25rem;
     margin-bottom: 0.35rem;
     padding-top: 0.2rem;
+  }
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0 0 0.3rem;
+  }
+  .brand-row img {
+    width: 3rem;
+    height: 3rem;
+    flex-shrink: 0;
+    display: block;
   }
   .app-header-main h1 {
     font-size: 1.55rem !important;
@@ -220,7 +233,7 @@ st.markdown(
   div[data-testid="stDownloadButton"] > button:hover {
     border-color: var(--ember) !important;
     color: var(--teal-deep) !important;
-    background: #fff8f0 !important;
+    background: #eef6ff !important;
   }
   .stButton > button:focus-visible,
   div[data-testid="stDownloadButton"] > button:focus-visible {
@@ -232,16 +245,16 @@ st.markdown(
     background: linear-gradient(135deg, var(--teal), var(--teal-deep)) !important;
     color: #fff !important;
     border: none !important;
-    box-shadow: 0 4px 14px rgba(24, 107, 93, 0.35) !important;
+    box-shadow: 0 4px 14px rgba(28, 111, 224, 0.35) !important;
   }
   .stButton > button[kind="primary"]:hover,
   div[data-testid="stDownloadButton"] > button[kind="primary"]:hover {
     color: #fff !important;
-    box-shadow: 0 4px 16px rgba(193, 122, 63, 0.45) !important;
+    box-shadow: 0 4px 16px rgba(23, 163, 245, 0.45) !important;
   }
   .stButton > button:disabled {
     opacity: 0.65 !important;
-    background: #ece7da !important;
+    background: #dbe6f7 !important;
     color: var(--ink-soft) !important;
     border: 1px dashed var(--line) !important;
   }
@@ -259,7 +272,7 @@ st.markdown(
   }
   div[role="radiogroup"] label:has(input:checked) {
     border-color: var(--teal);
-    background: #eef6f3;
+    background: #eaf3ff;
   }
 
   /* live-calculator metric cards */
@@ -280,6 +293,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 TEMPLATE_PATHS = {"kz": "template_kz-kz.xlsx", "foreign": "template_foreign.xlsx"}
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+
+
+@st.cache_data(show_spinner=False)
+def load_logo_b64(path: str) -> str:
+    """Inlined as a data URI in the header markup - simplest way to embed a
+    local image inside raw st.markdown HTML (no static-file server to set
+    up, works the same locally and on Streamlit Cloud)."""
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
 
 
 def init_state() -> None:
@@ -373,24 +396,24 @@ st.iframe(
 <style>
   #calc-shell { position: fixed; top: 110px; right: 22px; z-index: 999999;
     font-family: Inter, sans-serif; }
-  #calc-box { width: 220px; background: linear-gradient(180deg,#faf6ec,#f2ebdb);
-    border: 1px solid #ddd2ae; border-radius: 10px;
+  #calc-box { width: 220px; background: linear-gradient(180deg,#f4f8ff,#e7f0ff);
+    border: 1px solid #c9dbf7; border-radius: 10px;
     box-shadow: 0 12px 28px rgba(0,0,0,0.35); overflow: hidden; }
   #calc-head { display:flex; justify-content:space-between; align-items:center;
-    background:#186b5d; color:#fff; font-size:12.5px; font-weight:600;
+    background:#1c6fe0; color:#fff; font-size:12.5px; font-weight:600;
     padding:6px 10px; cursor:pointer; user-select:none; }
   #calc-toggle { opacity:0.85; }
   #calc-screen { font-family:"IBM Plex Mono",monospace; text-align:right;
-    font-size:20px; padding:10px 12px; color:#1e252d; background:#fff;
-    border-bottom:1px solid #ddd2ae; overflow:hidden; text-overflow:ellipsis; }
+    font-size:20px; padding:10px 12px; color:#14213f; background:#fff;
+    border-bottom:1px solid #c9dbf7; overflow:hidden; text-overflow:ellipsis; }
   #calc-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
-    background:#ddd2ae; }
+    background:#c9dbf7; }
   #calc-grid button { border:none; background:#fff; padding:11px 0;
-    font-size:14.5px; color:#1e252d; cursor:pointer; font-family:Inter,sans-serif; }
-  #calc-grid button:hover { background:#fdf3e7; }
-  #calc-grid button.op { background:#f2ebdb; color:#186b5d; font-weight:600; }
-  #calc-grid button.eq { background:#c17a3f; color:#fff; font-weight:700; grid-column: span 3; }
-  #calc-grid button.eq:hover { background:#a8672f; }
+    font-size:14.5px; color:#14213f; cursor:pointer; font-family:Inter,sans-serif; }
+  #calc-grid button:hover { background:#eaf4ff; }
+  #calc-grid button.op { background:#e7f0ff; color:#1c6fe0; font-weight:600; }
+  #calc-grid button.eq { background:#17a3f5; color:#fff; font-weight:700; grid-column: span 3; }
+  #calc-grid button.eq:hover { background:#0f86d0; }
   #calc-body.collapsed { display:none; }
 </style>
 <div id="calc-shell">
@@ -505,11 +528,15 @@ st.iframe(
 )
 
 # ---------------------------------------------------------------- Header ---
+_logo_b64 = load_logo_b64(LOGO_PATH)
 st.markdown(
     f"""
 <div class="app-header-row">
   <div class="app-header-main">
-    <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
+    <div class="brand-row">
+      <img src="data:image/png;base64,{_logo_b64}" alt="Heat Energy" />
+      <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
+    </div>
     <p class="app-header-sub">Калькулятор тендерных расчётов и подготовки Excel</p>
   </div>
   <div class="hdr-badges">
