@@ -283,6 +283,26 @@ st.markdown(
   }
 
   [data-testid="stToast"] { font-family: "Inter", sans-serif; }
+
+  /* Reset icon buttons ("🔄" only, no label) - compact and square, distinct
+     from the full-width text buttons elsewhere (Добавить лот, Сформировать,
+     etc.). Targeted via st.container(key=...) wrapper classes rather than
+     button content (CSS can't select on text), matched by prefix since the
+     per-lot ones carry a dynamic lot id suffix. */
+  .st-key-header_reset_btn button,
+  [class*="st-key-icon_reset_items_"] button,
+  [class*="st-key-icon_reset_header_"] button {
+    width: 2.15rem !important;
+    height: 2.15rem !important;
+    min-width: 2.15rem !important;
+    padding: 0 !important;
+    font-size: 1.05rem !important;
+    line-height: 1 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+  .st-key-header_reset_btn { margin-top: 0.15rem; }
   /* lot-type radio, rendered as pill-style segmented control */
   div[role="radiogroup"] {
     gap: 0.5rem;
@@ -416,6 +436,27 @@ lot_type = ("foreign"
             else "kz")
 st.session_state["lot_type"] = lot_type
 lot_type_key = f"lot_ids_{lot_type}"
+
+
+def reset_full_form() -> None:
+    """on_click, not inline - clears session_state entirely before the next
+    rerun. init_state() (called at module top-level on every run) only uses
+    setdefault(), so without wiping the keys here first the 'reset' would be
+    a no-op: every value would already exist and setdefault would leave it
+    untouched."""
+    for _key in list(st.session_state.keys()):
+        del st.session_state[_key]
+
+
+def start_reset_confirm() -> None:
+    st.session_state["confirm_reset_all"] = True
+
+
+def cancel_reset_confirm() -> None:
+    st.session_state["confirm_reset_all"] = False
+
+
+st.session_state.setdefault("confirm_reset_all", False)
 
 # ------------------------------------------------- Плавающий калькулятор ---
 # Обычный арифметический калькулятор "для прикидок", не связанный с бизнес-
@@ -593,27 +634,50 @@ st.iframe(
 )
 
 # ---------------------------------------------------------------- Header ---
+# Split across real st.columns (rather than one raw-HTML flex row) so the
+# reset icon button - a genuine widget - can sit directly next to the
+# "Лотов в тендере" badge without resorting to absolute-position CSS hacks
+# to fake alignment with markup it isn't actually a DOM sibling of.
 _logo_b64 = load_logo_b64(LOGO_PATH)
-st.markdown(
-    f"""
-<div class="app-header-row">
-  <div class="app-header-main">
-    <div class="brand-row">
-      <img src="data:image/png;base64,{_logo_b64}" alt="Heat Energy" />
-      <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
-    </div>
-    <p class="app-header-sub">Калькулятор тендерных расчётов и подготовки Excel</p>
+title_col, badge_col, reset_col = st.columns([5, 1.35, 0.55], vertical_alignment="top")
+with title_col:
+    st.markdown(
+        f"""
+<div class="app-header-main">
+  <div class="brand-row">
+    <img src="data:image/png;base64,{_logo_b64}" alt="Heat Energy" />
+    <h1>Heat Energy<span class="dot">.</span> Tender Calculator</h1>
   </div>
-  <div class="hdr-badges">
-    <div class="hdr-badge">
-      <span class="hdr-badge-label">Лотов в тендере</span>
-      <span class="hdr-badge-value">{len(st.session_state[lot_type_key])}</span>
-    </div>
-  </div>
+  <p class="app-header-sub">Калькулятор тендерных расчётов и подготовки Excel</p>
 </div>
 """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
+with badge_col:
+    st.markdown(
+        f"""
+<div class="hdr-badge">
+  <span class="hdr-badge-label">Лотов в тендере</span>
+  <span class="hdr-badge-value">{len(st.session_state[lot_type_key])}</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+with reset_col:
+    with st.container(key="header_reset_btn"):
+        st.button("🔄", key="btn_reset_all_start", on_click=start_reset_confirm,
+                  help="Начать новый тендер (очистить всё)")
+
+if st.session_state["confirm_reset_all"]:
+    st.warning("Все лоты, позиции и данные текущего тендера будут удалены "
+               "без возможности восстановления. Скачали Excel? Тогда можно очищать.")
+    confirm_col, cancel_col, _spacer_col = st.columns([1, 1, 3])
+    with confirm_col:
+        st.button("Да, очистить всё", key="btn_reset_all_confirm", type="primary",
+                   width="stretch", on_click=reset_full_form)
+    with cancel_col:
+        st.button("Отмена", key="btn_reset_all_cancel", width="stretch",
+                   on_click=cancel_reset_confirm)
 
 st.divider()
 
@@ -854,13 +918,14 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
-items_heading_col, items_reset_col = st.columns([5, 1])
+items_heading_col, items_reset_col = st.columns([9, 1])
 with items_heading_col:
     step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
 with items_reset_col:
-    st.button("Сбросить", key=f"btn_reset_items_{lot_type}_{active_id}",
-              on_click=reset_items, width="stretch",
-              help="Очистить таблицу позиций этого лота до одной пустой строки.")
+    with st.container(key=f"icon_reset_items_{lot_type}_{active_id}"):
+        st.button("🔄", key=f"btn_reset_items_{lot_type}_{active_id}",
+                  on_click=reset_items,
+                  help="Очистить таблицу позиций этого лота до одной пустой строки.")
 st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
            "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
            "строка исчезнет сразу, без лишних шагов."
@@ -964,14 +1029,15 @@ else:
 
 # --------------------------------------------------- Step 3: данные лота ---
 st.divider()
-header_heading_col, header_reset_col = st.columns([5, 1])
+header_heading_col, header_reset_col = st.columns([9, 1])
 with header_heading_col:
     step_heading("05", f"Данные лота {lot_ids.index(active_id) + 1}")
 with header_reset_col:
-    st.button("Сбросить", key=f"btn_reset_header_{lot_type}_{active_id}",
-              on_click=reset_lot_header, width="stretch",
-              help="Сбросить менеджера, заказчика, даты, наценку, курс и "
-                   "остальные поля этого лота до значений по умолчанию.")
+    with st.container(key=f"icon_reset_header_{lot_type}_{active_id}"):
+        st.button("🔄", key=f"btn_reset_header_{lot_type}_{active_id}",
+                  on_click=reset_lot_header,
+                  help="Сбросить менеджера, заказчика, даты, наценку, курс и "
+                       "остальные поля этого лота до значений по умолчанию.")
 
 left_col, right_col = st.columns(2)
 
@@ -1170,51 +1236,3 @@ if st.session_state.get("generated_file"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary", width="stretch",
     )
-
-# --------------------------------------------------- Новый тендер / сброс --
-st.divider()
-step_heading("06", "Новый тендер")
-st.caption("Полностью очищает форму — все лоты, позиции и данные текущего "
-           "тендера — чтобы начать заполнение следующего с чистого листа.")
-
-
-def reset_full_form() -> None:
-    """on_click, not inline - clears session_state entirely before the next
-    rerun. init_state() (called at module top-level on every run) only uses
-    setdefault(), so without wiping the keys here first the 'reset' would be
-    a no-op: every value would already exist and setdefault would leave it
-    untouched."""
-    for _key in list(st.session_state.keys()):
-        del st.session_state[_key]
-
-
-def start_reset_confirm() -> None:
-    st.session_state["confirm_reset_all"] = True
-
-
-def cancel_reset_confirm() -> None:
-    st.session_state["confirm_reset_all"] = False
-
-
-st.session_state.setdefault("confirm_reset_all", False)
-
-if not st.session_state["confirm_reset_all"]:
-    # on_click, same as everywhere else in this file - NOT an inline
-    # `if st.button(...): ...; st.rerun()`. An explicit st.rerun() call mid-
-    # script triggers Streamlit's rerun machinery a second, awkward way that
-    # doesn't compose cleanly with the rest of this page's widgets (a plain
-    # button click already reruns the script once on its own - on_click just
-    # lets us mutate session_state safely beforehand, exactly like
-    # add_lot/remove_lot/on_fetch_rate above).
-    st.button("Начать новый тендер (очистить всё)",
-              key="btn_reset_all_start", width="stretch", on_click=start_reset_confirm)
-else:
-    st.warning("Все лоты, позиции и данные текущего тендера будут удалены "
-               "без возможности восстановления. Скачали Excel? Тогда можно очищать.")
-    confirm_col, cancel_col = st.columns(2)
-    with confirm_col:
-        st.button("Да, очистить всё", key="btn_reset_all_confirm", type="primary",
-                   width="stretch", on_click=reset_full_form)
-    with cancel_col:
-        st.button("Отмена", key="btn_reset_all_cancel", width="stretch",
-                   on_click=cancel_reset_confirm)
