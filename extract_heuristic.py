@@ -21,7 +21,8 @@ HEADER_KEYWORDS = {
     "qty": ["кол-во", "количество", "саны"],
     "price": ["цена", "баға", "стоимост"],
 }
-STOP_ROW_KEYWORDS = ["итого", "барлығы", "всего", "жиынтығ"]
+STOP_ROW_KEYWORDS = ["итого", "барлығы", "всего", "жиынтығ", "итог:",
+                      "в том числе", "примечание", "приложение", "форма №"]
 
 
 def _norm(s):
@@ -70,13 +71,21 @@ def parse_table(table):
     if header_idx is None:
         return []
 
+    # docx/pdf таблицы, разбитые на страницы, часто повторяют строку
+    # заголовка на каждой странице - без этого фильтра она попадёт в items
+    # как отдельная "позиция" с именем вроде "Наименование".
+    header_row_norm = {_norm(c) for c in table[header_idx] if c}
+
     items = []
     for row in table[header_idx + 1:]:
         name = row[col_map["name"]] if col_map.get("name") is not None and col_map["name"] < len(row) else None
         if not name or not str(name).strip():
             continue
-        if any(k in _norm(name) for k in STOP_ROW_KEYWORDS):
+        name_norm = _norm(name)
+        if any(k in name_norm for k in STOP_ROW_KEYWORDS):
             break
+        if name_norm in header_row_norm:
+            continue
 
         def get(field):
             idx = col_map.get(field)
@@ -84,11 +93,18 @@ def parse_table(table):
                 return None
             return row[idx]
 
+        qty = _to_number(get("qty"))
+        price = _to_number(get("price"))
+        if qty is None and price is None:
+            # ни количества, ни цены - скорее всего заголовок раздела или
+            # примечание, а не реальная позиция лота
+            continue
+
         items.append({
             "name": str(name).strip(),
             "unit": (str(get("unit")).strip() if get("unit") else None),
-            "qty": _to_number(get("qty")),
-            "unit_price": _to_number(get("price")),
+            "qty": qty,
+            "unit_price": price,
         })
     return items
 

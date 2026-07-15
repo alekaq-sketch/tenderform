@@ -14,15 +14,23 @@
 на проверку перед тем, как его цифры попадут в расчёт прибыли. Модель
 может ошибиться в редких/нетипичных документах не меньше человека.
 
-Требует переменную окружения ANTHROPIC_API_KEY.
+Требует переменную окружения ANTHROPIC_API_KEY (или явный api_key).
 """
 import json
 import os
-import requests
 
 EXTRACTION_PROMPT = """Ниже - сырой текст технического задания/спецификации с портала
-госзакупок. Найди в нём таблицу позиций товара и верни ТОЛЬКО JSON (без markdown,
-без пояснений) в следующем формате:
+госзакупок. Найди в нём ТОЛЬКО реальные позиции товара (лоты для поставки) -
+конкретные наименования с количеством и/или ценой. НЕ включай в items:
+  - заголовки разделов, повторяющиеся заголовки таблицы (если таблица разбита
+    на страницы), примечания и сноски;
+  - строки "Итого"/"Всего"/промежуточные и общие итоги;
+  - технические характеристики, условия поставки и прочий текст, не являющийся
+    отдельной позицией со своим количеством/ценой.
+Если сомневаешься, является ли строка позицией лота - включай её только если у
+неё есть количество или цена; иначе пропусти.
+
+Верни ТОЛЬКО JSON (без markdown, без пояснений) в следующем формате:
 
 {
   "lot_name": "...",
@@ -46,23 +54,17 @@ EXTRACTION_PROMPT = """Ниже - сырой текст технического
 
 
 def extract_fields(raw_text: str, api_key: str | None = None) -> dict:
-    api_key = api_key or os.environ["ANTHROPIC_API_KEY"]
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 2000,
-            "messages": [{"role": "user", "content": EXTRACTION_PROMPT + raw_text[:15000]}],
-        },
-        timeout=60,
+    import anthropic  # imported lazily - this feature is optional (see README)
+
+    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    response = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=2000,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+        messages=[{"role": "user", "content": EXTRACTION_PROMPT + raw_text[:15000]}],
     )
-    resp.raise_for_status()
-    text = resp.json()["content"][0]["text"]
+    text = next(block.text for block in response.content if block.type == "text")
     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(text)
 
