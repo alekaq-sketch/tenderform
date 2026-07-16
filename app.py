@@ -57,6 +57,14 @@ st.markdown(
 
   header[data-testid="stHeader"] { background: transparent; }
   [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none; }
+  /* Streamlit's own toolbar (Deploy button + the "⋮" main-menu icon) is a
+     separate, higher-stacked layer pinned to the same top-right corner our
+     own header row lives in - background:transparent above only hid the
+     bar's fill, not its buttons, so the menu icon floated over our reset
+     button as three stray dashes. This app has its own branded chrome, so
+     Streamlit's is just noise here - hide it outright rather than fight
+     its z-index. */
+  [data-testid="stToolbar"] { display: none !important; }
 
   div.block-container {
     position: relative;
@@ -67,7 +75,7 @@ st.markdown(
        backs off from a hard 960px so the card never touches the edges on
        medium-width windows or phones. */
     padding: clamp(1rem, 3vw, 1.4rem) clamp(1rem, 4vw, 2.25rem) clamp(1.4rem, 4vw, 2.5rem);
-    margin-top: 0.6rem;
+    margin-top: 0.15rem;
     max-width: min(960px, 94vw);
     box-shadow:
       0 2px 0 rgba(255, 255, 255, 0.5) inset,
