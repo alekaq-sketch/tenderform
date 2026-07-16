@@ -153,12 +153,13 @@ st.markdown(
   }
   .hdr-badge-label {
     display: block;
-    font-size: 0.66rem;
+    font-size: 0.6rem;
     font-weight: 600;
-    letter-spacing: 0.09em;
+    letter-spacing: 0.03em;
+    line-height: 1.25;
     text-transform: uppercase;
     color: var(--teal);
-    margin-bottom: 0.2rem;
+    margin-bottom: 0.25rem;
   }
   .hdr-badge-value {
     display: block;
@@ -302,6 +303,7 @@ st.markdown(
      aligned unit instead of a tiny button dwarfed by its neighbours. */
   .st-key-header_reset_btn button,
   [class*="st-key-icon_reset_items_"] button,
+  [class*="st-key-icon_undo_items_"] button,
   [class*="st-key-icon_reset_header_"] button {
     width: 2.6rem !important;
     height: 2.6rem !important;
@@ -313,6 +315,7 @@ st.markdown(
   }
   .st-key-header_reset_btn button span[data-testid="stIconMaterial"],
   [class*="st-key-icon_reset_items_"] button span[data-testid="stIconMaterial"],
+  [class*="st-key-icon_undo_items_"] button span[data-testid="stIconMaterial"],
   [class*="st-key-icon_reset_header_"] button span[data-testid="stIconMaterial"] {
     font-size: 1.2rem !important;
     color: var(--teal-deep) !important;
@@ -373,6 +376,68 @@ def init_state() -> None:
     st.session_state.setdefault("raw_text", "")
     st.session_state.setdefault("generated_file", None)
     st.session_state.setdefault("generated_name", "расчёт.xlsx")
+
+
+def parse_pasted_number(text: str):
+    """Parses a number cell copied from Excel, regardless of locale. Excel
+    in a RU/KZ locale writes currency/number-formatted cells to the
+    clipboard as text with a comma decimal separator and a space (or NBSP)
+    thousands grouping - e.g. "8 500,00" for 8500, "2 000,50" for 2000.5.
+    Streamlit's data_editor doesn't understand that when pasted straight
+    into the table (it silently zeroes the cell, or mangles it - "2000,50"
+    becomes 200050, the comma just vanishes). That can't be fixed after the
+    fact from Python once it's already in session_state - by then the
+    table has already mis-parsed it and the original text is gone - so this
+    is used by the "paste as text" fallback below, which hands us the raw
+    clipboard text before anything else touches it.
+    Returns None if the cell doesn't look like a number at all (so callers
+    can tell "empty/not a number" apart from a genuine 0)."""
+    t = text.strip().replace("\xa0", " ")
+    if not t:
+        return None
+    has_comma, has_dot = "," in t, "." in t
+    if has_comma and has_dot:
+        # Whichever separator appears last is the decimal point; the other
+        # one must be thousands-grouping - covers both "8.500,00" (RU/DE
+        # thousands-dot) and "8,500.00" (US thousands-comma).
+        if t.rindex(",") > t.rindex("."):
+            t = t.replace(".", "").replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    elif has_comma:
+        t = t.replace(" ", "").replace(",", ".")
+    else:
+        t = t.replace(" ", "")
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def parse_pasted_table(text: str, columns: list[str], numeric: set[str]) -> list[dict]:
+    """Splits raw TSV text (as copied from an Excel range) into a list of
+    row dicts keyed by `columns`, positionally - column N of the pasted text
+    becomes `columns[N]`. Extra pasted columns beyond len(columns) are
+    ignored; missing trailing columns are left out of the dict (callers'
+    normalize_* functions already default missing fields). Columns named in
+    `numeric` are run through parse_pasted_number(); a cell that doesn't
+    parse as a number is treated as 0 rather than silently dropping the
+    whole row, since a partially-wrong row the user can see and fix beats a
+    row that vanished with no explanation."""
+    rows = []
+    for line in text.strip("\n").splitlines():
+        if not line.strip():
+            continue
+        cells = line.split("\t")
+        row = {}
+        for col_name, cell in zip(columns, cells):
+            if col_name in numeric:
+                parsed = parse_pasted_number(cell)
+                row[col_name] = parsed if parsed is not None else 0
+            else:
+                row[col_name] = cell.strip()
+        rows.append(row)
+    return rows
 
 
 def normalize_item_kz(item: dict) -> dict:
@@ -767,6 +832,47 @@ st.iframe(
     height=1,
 )
 
+# ------------------------------------------------- Ctrl+Z в таблице позиций
+# The items table (glide-data-grid) has no undo of its own - Ctrl+Z inside
+# it does nothing (confirmed by testing: typing into a cell and pressing
+# Ctrl+Z leaves the typed value in place). Real undo is implemented
+# server-side (push_items_history / undo_last_items_change in the Python
+# code, one history entry per actual table change) with a visible "undo"
+# icon button next to the table - this script just makes Ctrl+Z do the same
+# thing as clicking that button, so the shortcut a spreadsheet user reaches
+# for out of habit actually works. Scoped to keydowns whose target is
+# inside the currently-rendered items grid, so Ctrl+Z anywhere else on the
+# page (a text field, the browser itself) is left alone.
+st.iframe(
+    r"""
+<script>
+(function () {
+  try {
+    var doc = window.parent.document;
+    if (doc.__ruUndoShortcutInstalled) { return; }
+    doc.__ruUndoShortcutInstalled = true;
+
+    doc.addEventListener('keydown', function (e) {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== 'z') { return; }
+      var target = e.target;
+      var insideGrid = target && (
+        target.tagName === 'CANVAS' ||
+        (target.closest && target.closest('[data-testid="stDataFrame"]'))
+      );
+      if (!insideGrid) { return; }
+      var undoBtn = doc.querySelector('[class*="st-key-icon_undo_items_"] button');
+      if (undoBtn && !undoBtn.disabled) {
+        e.preventDefault();
+        undoBtn.click();
+      }
+    }, true);
+  } catch (e) {}
+})();
+</script>
+""",
+    height=1,
+)
+
 # ---------------------------------------------------------------- Header ---
 # Split across real st.columns (rather than one raw-HTML flex row) so the
 # reset icon button - a genuine widget - can sit directly next to the
@@ -777,7 +883,7 @@ st.iframe(
 # alignment left them visually stranded near the top edge instead of
 # centered against the header block they belong to.
 _logo_b64 = load_logo_b64(LOGO_PATH)
-title_col, badge_col, reset_col = st.columns([5, 1.5, 0.7], vertical_alignment="center")
+title_col, badge_col, reset_col = st.columns([4.6, 2.1, 0.7], vertical_alignment="center")
 with title_col:
     st.markdown(
         f"""
@@ -795,7 +901,7 @@ with badge_col:
     st.markdown(
         f"""
 <div class="hdr-badge">
-  <span class="hdr-badge-label">Лотов в тендере</span>
+  <span class="hdr-badge-label">Раздельных лотов в тендере</span>
   <span class="hdr-badge-value">{len(st.session_state[lot_type_key])}</span>
 </div>
 """,
@@ -947,7 +1053,19 @@ for _field, _default in lot_header_store[active_id].items():
 items_state_key = f"items_{lot_type}_{active_id}"
 items_editor_key = f"items_{lot_type}_editor_{active_id}"
 items_seed_key = f"items_{lot_type}_seed_{active_id}"
+items_history_key = f"items_{lot_type}_history_{active_id}"
 st.session_state.setdefault(items_state_key, [])
+st.session_state.setdefault(items_history_key, [])
+
+
+def push_items_history(previous_items: list[dict]) -> None:
+    """Called right before items_state_key gets overwritten, with whatever
+    it held a moment ago - so "undo" (button or Ctrl+Z) has something to
+    restore. Capped at 10 entries; a table you're bulk-pasting into doesn't
+    need deeper history than "the last few things I did"."""
+    history = st.session_state[items_history_key]
+    history.append(previous_items)
+    del history[:-10]
 
 
 def reset_lot_header() -> None:
@@ -966,9 +1084,51 @@ def reset_lot_header() -> None:
 def reset_items() -> None:
     """Same on_click timing requirement as reset_lot_header - items_editor_key
     is itself a data_editor widget key."""
+    push_items_history(st.session_state[items_state_key])
     st.session_state[items_state_key] = []
     st.session_state.pop(items_seed_key, None)
     st.session_state.pop(items_editor_key, None)
+
+
+def undo_last_items_change() -> None:
+    """on_click (also triggered by Ctrl+Z via the JS shortcut below, which
+    just clicks this same button) - restores whatever the table looked like
+    before the last edit, paste, or reset."""
+    history = st.session_state[items_history_key]
+    if not history:
+        return
+    st.session_state[items_state_key] = history.pop()
+    st.session_state.pop(items_seed_key, None)
+    st.session_state.pop(items_editor_key, None)
+
+
+PASTE_COLUMNS_KZ = ["name", "qty", "purchase_price_ddp", "sale_price_manual", "extra_cost"]
+PASTE_NUMERIC_KZ = {"qty", "purchase_price_ddp", "sale_price_manual", "extra_cost"}
+PASTE_COLUMNS_FX = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
+                     "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
+PASTE_NUMERIC_FX = {"qty", "price_fca", "sale_price_kzt", "duty_rate_pct", "truck_count", "overhead",
+                     "extra_cost"}
+
+
+def apply_pasted_items() -> None:
+    """on_click, same timing reasoning as reset_items - replaces the whole
+    items table with whatever's in the paste text area, parsed with
+    parse_pasted_table/parse_pasted_number instead of the data_editor's own
+    (RU-locale-unaware) paste handling."""
+    paste_key = f"paste_text_{lot_type}_{active_id}"
+    text = st.session_state.get(paste_key, "")
+    if not text.strip():
+        return
+    push_items_history(st.session_state[items_state_key])
+    if lot_type == "kz":
+        rows = parse_pasted_table(text, PASTE_COLUMNS_KZ, PASTE_NUMERIC_KZ)
+        st.session_state[items_state_key] = [normalize_item_kz(r) for r in rows]
+    else:
+        rows = parse_pasted_table(text, PASTE_COLUMNS_FX, PASTE_NUMERIC_FX)
+        st.session_state[items_state_key] = [normalize_item_fx(r) for r in rows]
+    st.session_state.pop(items_seed_key, None)
+    st.session_state.pop(items_editor_key, None)
+    st.session_state[paste_key] = ""
 
 # ------------------------------------------------- Step 1: загрузка файла --
 st.divider()
@@ -1066,23 +1226,54 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
-items_heading_col, items_reset_col = st.columns([9, 1], vertical_alignment="center")
+items_heading_col, items_undo_col, items_reset_col = st.columns(
+    [8, 1, 1], vertical_alignment="center")
 with items_heading_col:
     step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
+with items_undo_col:
+    with st.container(key=f"icon_undo_items_{lot_type}_{active_id}"):
+        st.button("", key=f"btn_undo_items_{lot_type}_{active_id}",
+                  icon=":material/undo:", on_click=undo_last_items_change,
+                  disabled=not st.session_state[items_history_key],
+                  help="Отменить последнее изменение таблицы позиций (вставку, "
+                       "правку ячейки, удаление строки, сброс). Работает и через "
+                       "Ctrl+Z, когда фокус в таблице.")
 with items_reset_col:
     with st.container(key=f"icon_reset_items_{lot_type}_{active_id}"):
         st.button("", key=f"btn_reset_items_{lot_type}_{active_id}",
                   icon=":material/restart_alt:", on_click=reset_items,
                   help="Очистить таблицу позиций этого лота до одной пустой строки.")
-st.caption("Совет: можно выделить и скопировать диапазон ячеек прямо в Excel, "
-           "затем щёлкнуть по первой ячейке здесь и нажать Ctrl+V — вставится "
-           "сразу несколько строк и столбцов, новые строки таблица добавит сама, "
-           "плюсик жать не придётся. Чтобы удалить строку: выделите её слева "
-           "(наведите на номер строки) и нажмите на значок корзины сверху "
-           "таблицы, либо клавишу Delete — строка исчезнет сразу."
+st.caption("Можно выделить и скопировать диапазон ячеек прямо в Excel, затем "
+           "щёлкнуть по первой ячейке здесь и нажать Ctrl+V — новые строки "
+           "таблица добавит сама, плюсик жать не придётся. Числа с русской "
+           "раскладкой Excel (запятая вместо точки, пробел в разрядах) так "
+           "вставляются не всегда верно — если цена вставилась нулём или "
+           "перепуталась, воспользуйтесь способом «Вставить текстом» ниже, "
+           "он всегда разбирает такие числа правильно. Чтобы удалить строку: "
+           "выделите её слева (наведите на номер строки) и нажмите на значок "
+           "корзины сверху таблицы, либо клавишу Delete — строка исчезнет сразу."
            + (" Страна происхождения / ТН ВЭД / транспорт указываются на каждый "
               "товар отдельно — они могут отличаться от позиции к позиции."
               if lot_type == "foreign" else ""))
+
+_paste_col_hint = (", ".join(["Наименование", "Кол-во", "Цена DDP",
+                               "Цена продажи (необязательно)", "Доп.расходы (необязательно)"])
+                    if lot_type == "kz" else
+                    ", ".join(["Наименование", "Ед.изм", "Кол-во", "Цена FCA", "Цена продажи",
+                               "Пошлина %", "Кол-во машин", "Накладные", "Доп.расходы",
+                               "Страна", "ТН ВЭД", "Транспорт"]))
+with st.expander("📋 Вставить текстом (если обычная вставка Ctrl+V путает цены)"):
+    st.caption(f"Скопируйте диапазон в Excel (Ctrl+C), вставьте сюда (Ctrl+V) и нажмите "
+               f"кнопку ниже — заменит всю таблицу позиций этими данными. Порядок "
+               f"столбцов слева направо: {_paste_col_hint}. Лишние скопированные "
+               f"столбцы справа игнорируются, недостающие в конце можно не заполнять.")
+    paste_key = f"paste_text_{lot_type}_{active_id}"
+    st.session_state.setdefault(paste_key, "")
+    paste_text = st.text_area("Вставьте диапазон из Excel", key=paste_key, height=100,
+                               label_visibility="collapsed")
+    st.button("Заменить таблицу позиций этими данными",
+              key=f"btn_paste_apply_{lot_type}_{active_id}",
+              on_click=apply_pasted_items, disabled=not paste_text.strip())
 
 DEFAULT_ROW_KZ = {"name": "", "qty": 1, "purchase_price_ddp": 0.0, "extra_cost": 0.0,
                    "sale_price_manual": 0.0}
@@ -1104,11 +1295,26 @@ if lot_type == "kz":
     # state for this key) removes the feedback loop entirely - the editor
     # is the single source of truth for what's on screen; items_state_key
     # is only a read-only mirror kept in sync for validation/export below.
-    if items_seed_key not in st.session_state:
+    # Captured *before* the seed gets (re)built below, so the history push
+    # after data_editor - which compares its output against items_state_key
+    # - can tell "the grid just materialized whatever's already in
+    # items_state_key" (this render) apart from "the user actually changed
+    # something in an already-mounted grid" (every other render). Without
+    # this, the very first render of a fresh table pushes a bogus history
+    # entry: items_state_key starts as [] but the seed always shows at
+    # least one default blank row, so the two never matched literally, even
+    # though nothing an undo should ever need to reverse actually happened -
+    # same story after reset_items/apply_pasted_items/undo itself, which
+    # already push their own (real) history entry and pop the seed.
+    _items_seed_is_fresh = items_seed_key not in st.session_state
+    if _items_seed_is_fresh:
         current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_KZ)]
         st.session_state[items_seed_key] = pd.DataFrame(
             current_items,
-            columns=["name", "qty", "purchase_price_ddp", "extra_cost", "sale_price_manual"])
+            # sale_price_manual right after purchase_price_ddp (they're the
+            # two "price" columns, read together) - extra_cost stays last,
+            # since it's the field you fill in least often.
+            columns=["name", "qty", "purchase_price_ddp", "sale_price_manual", "extra_cost"])
     # Streamlit's "small"/"medium"/"large" width categories are rough hints,
     # not sized to the label's actual text - a long header still truncates
     # inside a "medium" column. Explicit pixel widths (supported alongside
@@ -1123,9 +1329,6 @@ if lot_type == "kz":
             "purchase_price_ddp": st.column_config.NumberColumn(
                 "Цена DDP, тнг", help="Цена закупки DDP (с НДС), тенге.",
                 min_value=0, step=100, format="%.2f", width=150),
-            "extra_cost": st.column_config.NumberColumn(
-                "Доп.расходы, тнг", help="Прочие расходы по товару, тенге.",
-                min_value=0, step=1000, format="%.2f", width=150),
             "sale_price_manual": st.column_config.NumberColumn(
                 "Цена продажи (если задал заказчик), тнг",
                 help="Заполняйте, только если заказчик сам назвал цену за штуку. "
@@ -1134,15 +1337,22 @@ if lot_type == "kz":
                      "коэффициент наценки лота на неё влиять не будет. "
                      "Оставьте 0, если цену считаем сами по коэффициенту (обычный случай).",
                 min_value=0, step=100, format="%.2f", width=280),
+            "extra_cost": st.column_config.NumberColumn(
+                "Доп.расходы, тнг", help="Прочие расходы по товару, тенге.",
+                min_value=0, step=1000, format="%.2f", width=150),
         },
         key=items_editor_key,
     )
     # Read-only mirror for validation/export (Generate button, currency
     # hint) - never fed back into the editor above, so it can't create the
-    # feedback loop described up top.
-    st.session_state[items_state_key] = [
-        normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")
-    ]
+    # feedback loop described up top. Runs on *every* rerun, not just real
+    # edits (typing in an unrelated field elsewhere on the page reruns this
+    # too) - only push undo history when the table actually changed, or
+    # every unrelated rerun would silently burn through the 10-entry cap.
+    _new_kz_items = [normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")]
+    if not _items_seed_is_fresh and _new_kz_items != st.session_state[items_state_key]:
+        push_items_history(st.session_state[items_state_key])
+    st.session_state[items_state_key] = _new_kz_items
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 
     # Purely informational - nothing here feeds back into Excel. When the
@@ -1174,7 +1384,10 @@ if lot_type == "kz":
 else:
     cols = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
             "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
-    if items_seed_key not in st.session_state:
+    # Same "was the seed just (re)built this render" tracking as the kz
+    # branch above - see the comment there for why it matters for undo.
+    _items_seed_is_fresh = items_seed_key not in st.session_state
+    if _items_seed_is_fresh:
         current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_FX)]
         st.session_state[items_seed_key] = pd.DataFrame(current_items, columns=cols)
     currency_now = st.session_state.get(k("currency"), "USD")
@@ -1210,9 +1423,11 @@ else:
         },
         key=items_editor_key,
     )
-    st.session_state[items_state_key] = [
-        normalize_item_fx(row) for row in edited_df.fillna("").to_dict("records")
-    ]
+    # Same "only push on a real change" reasoning as the kz table above.
+    _new_fx_items = [normalize_item_fx(row) for row in edited_df.fillna("").to_dict("records")]
+    if not _items_seed_is_fresh and _new_fx_items != st.session_state[items_state_key]:
+        push_items_history(st.session_state[items_state_key])
+    st.session_state[items_state_key] = _new_fx_items
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 
 # --------------------------------------------------- Step 3: данные лота ---
@@ -1243,9 +1458,14 @@ with left_col:
 
 with right_col:
     st.text_input("Заказчик", key=k("supplier"), placeholder="Введите заказчика...")
+    # step is only what the +/- spinner buttons move by - you can still type
+    # any value respecting format's 4 decimal places regardless of step.
+    # 0.1 per click is a sensible increment to spin through by hand; 0.0001
+    # made every click imperceptible - typing is the only sane way to reach
+    # fine values like 1.5375 anyway, the buttons are for quick round moves.
     if lot_type == "kz":
         st.number_input("Коэффициент наценки (> 1)", key=k("markup_coef"),
-                         min_value=1.0001, step=0.0001, format="%.4f",
+                         min_value=1.0001, step=0.1, format="%.4f",
                          disabled=kz_coef_locked,
                          help=("Недоступен: у всех позиций лота задана ручная цена "
                                "продажи заказчика (см. таблицу позиций выше), поэтому "
@@ -1255,7 +1475,7 @@ with right_col:
                                if kz_coef_locked else None))
     else:
         st.number_input("Коэфф. наценки (DAP → Вход DAP, > 1)", key=k("markup_coef"),
-                         min_value=1.0001, step=0.0001, format="%.4f")
+                         min_value=1.0001, step=0.1, format="%.4f")
         st.number_input("НДС на ввоз, %", key=k("vat_rate"),
                          min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
 
