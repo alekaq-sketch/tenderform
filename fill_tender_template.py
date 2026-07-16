@@ -67,7 +67,7 @@ import openpyxl
 from copy import copy
 from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 _CELL_REF_RE = re.compile(r'(\$?)([A-Za-z]{1,3})(\$?)(\d+)')
@@ -239,6 +239,26 @@ def _fill_block_kz(ws, block_first: int, header: dict, items: list[dict]) -> int
         ws[f"D{rr}"] = item["qty"]
         ws[f"E{rr}"] = item["purchase_price_ddp"]
         ws[f"T{rr}"] = item.get("extra_cost") or 0
+
+        # J is normally the formula "=E{rr}*$J$9" (purchase price × lot
+        # markup coefficient), copied down from the template's row 12 by
+        # _copy_row_style above for every row past the first. When the
+        # customer names their own price for this specific item, that
+        # formula is exactly backwards - the price is the given fact and
+        # the coefficient is what you'd back into, not the other way round.
+        # Overwriting J with the plain value (not a formula) makes every
+        # downstream column that reads J{rr} (K, L, M, N, O, P, Q, R, S)
+        # correctly recompute off the customer's price instead, while
+        # leaving $J$9 and every other item's formula untouched. Italic
+        # flags it in the file as "typed in", not "computed", for whoever
+        # reviews the Excel later.
+        sale_price_manual = item.get("sale_price_manual") or 0
+        if sale_price_manual > 0:
+            j_cell = ws[f"J{rr}"]
+            j_cell.value = sale_price_manual
+            old_font = j_cell.font
+            j_cell.font = Font(name=old_font.name, size=old_font.size, bold=old_font.bold,
+                                italic=True, color=old_font.color)
 
     last_item_row = first_row + len(items) - 1
     for col in sum_cols:

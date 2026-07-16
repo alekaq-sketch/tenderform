@@ -294,7 +294,7 @@ st.markdown(
 
   /* Reset icon buttons (Material "restart_alt" icon, no text label) -
      square and consistently sized, distinct from the full-width text
-     buttons elsewhere (Добавить лот, Сформировать, etc.). Targeted via
+     buttons elsewhere (Добавить раздельный лот, Сформировать, etc.). Targeted via
      st.container(key=...) wrapper classes rather than button content (CSS
      can't select on text), matched by prefix since the per-lot ones carry
      a dynamic lot id suffix. Sized to roughly match the badge's own height
@@ -386,6 +386,14 @@ def normalize_item_kz(item: dict) -> dict:
         "qty": max(1, int(item.get("qty") or 1)),
         "purchase_price_ddp": max(0.0, float(item.get("purchase_price_ddp") or 0)),
         "extra_cost": max(0.0, float(item.get("extra_cost") or 0)),
+        # 0 means "not set" - the sale price for this item is computed in
+        # Excel as purchase_price_ddp * lot markup_coef, same as always. Only
+        # when the customer dictates their own price for a specific item
+        # (rare, but it happens) does this get filled in - Excel then uses
+        # this exact value for that row instead of the formula, and the
+        # coefficient effectively gets read backwards (price / purchase)
+        # rather than forwards (purchase * coefficient).
+        "sale_price_manual": max(0.0, float(item.get("sale_price_manual") or 0)),
     }
 
 
@@ -706,6 +714,59 @@ st.iframe(
     height=1,
 )
 
+# ------------------------------------------- Подсветка первого лота-пилюли -
+# The lot-pills widget (st.pills, "Лот 1" / "Лот 2" / ...) is correct
+# server-side from the very first render - active_id is always right - but
+# confirmed via DOM inspection: the very first time a given lot_type's pill
+# widget ever mounts in this browser tab (i.e. the first time you switch to
+# a lot type in a session), its frontend paints the selected pill as
+# unhighlighted (aria-checked="false", no data-selected) instead of
+# reflecting the value it was given. It corrects itself on any later rerun
+# of that *already-mounted* widget, so it's a first-paint sync glitch, not a
+# real state bug - but a synchronous st.rerun() from Python right after that
+# first render does NOT fix it (tried it): Streamlit aborts and restarts the
+# script fast enough that the browser never actually paints the broken frame
+# in between, so there's nothing for a second render of the same mounted
+# widget to visibly correct. Patching the DOM attributes directly, client-
+# side, sidesteps that entirely - the highlighted-pill style keys off these
+# exact attributes (confirmed: the CSS class name is identical between a
+# working and a broken pill, only aria-checked/data-selected differ).
+# Scoped to required single-select pill groups with exactly one option -
+# the only shape this bug has been seen in (a lot_type tab always starts
+# with exactly one lot the first time it's visited) - so a multi-lot pills
+# group a user has actually interacted with is never touched by this.
+st.iframe(
+    r"""
+<script>
+(function () {
+  try {
+    var doc = window.parent.document;
+    if (doc.__ruPillsObserverInstalled) { return; }
+    doc.__ruPillsObserverInstalled = true;
+
+    function fixPills() {
+      doc.querySelectorAll('[role="radiogroup"][aria-required="true"]').forEach(function (group) {
+        var radios = group.querySelectorAll('button[role="radio"][data-variant="pills"]');
+        if (radios.length !== 1) { return; }
+        var only = radios[0];
+        if (only.getAttribute('aria-checked') !== 'true') {
+          only.setAttribute('aria-checked', 'true');
+          only.setAttribute('data-selected', 'true');
+        }
+      });
+    }
+
+    fixPills();
+    new MutationObserver(fixPills)
+      .observe(doc.body, { childList: true, subtree: true, attributes: true,
+                            attributeFilter: ['aria-checked', 'data-selected'] });
+  } catch (e) {}
+})();
+</script>
+""",
+    height=1,
+)
+
 # ---------------------------------------------------------------- Header ---
 # Split across real st.columns (rather than one raw-HTML flex row) so the
 # reset icon button - a genuine widget - can sit directly next to the
@@ -780,9 +841,13 @@ if st.session_state[active_key] not in st.session_state[lot_ids_key]:
 # ------------------------------------------------------------ Step: лоты ---
 st.divider()
 step_heading("02", "Лоты тендера")
-st.caption("Один тендер может включать несколько лотов — каждый лот получает "
-           "свой собственный блок расчёта (шапка + позиции + итоги), они "
-           "печатаются один под другим в одном Excel-файле.")
+st.caption("Товары, которые идут одной пачкой и зависят друг от друга (одна "
+           "поставка, один заказчик, одна цена/срок) — заносите позициями "
+           "внутри одного лота, в таблице позиций ниже. «Добавить раздельный "
+           "лот» — для по-настоящему независимого лота: свой менеджер, "
+           "заказчик, коэффициент наценки, валюта и сроки, отдельный блок "
+           "расчёта (шапка + позиции + итоги), напечатанный отдельно от "
+           "остальных лотов в том же Excel-файле.")
 
 
 def add_lot() -> None:
@@ -825,7 +890,7 @@ active_id = st.session_state[active_key]
 
 add_col, remove_col = st.columns(2)
 with add_col:
-    st.button("+ Добавить лот", key=f"btn_add_lot_{lot_type}",
+    st.button("+ Добавить раздельный лот", key=f"btn_add_lot_{lot_type}",
               on_click=add_lot, width="stretch")
 with remove_col:
     st.button(f"Удалить лот {lot_ids.index(active_id) + 1}", key=f"btn_remove_lot_{lot_type}",
@@ -1009,14 +1074,18 @@ with items_reset_col:
         st.button("", key=f"btn_reset_items_{lot_type}_{active_id}",
                   icon=":material/restart_alt:", on_click=reset_items,
                   help="Очистить таблицу позиций этого лота до одной пустой строки.")
-st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
-           "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
-           "строка исчезнет сразу, без лишних шагов."
+st.caption("Совет: можно выделить и скопировать диапазон ячеек прямо в Excel, "
+           "затем щёлкнуть по первой ячейке здесь и нажать Ctrl+V — вставится "
+           "сразу несколько строк и столбцов, новые строки таблица добавит сама, "
+           "плюсик жать не придётся. Чтобы удалить строку: выделите её слева "
+           "(наведите на номер строки) и нажмите на значок корзины сверху "
+           "таблицы, либо клавишу Delete — строка исчезнет сразу."
            + (" Страна происхождения / ТН ВЭД / транспорт указываются на каждый "
               "товар отдельно — они могут отличаться от позиции к позиции."
               if lot_type == "foreign" else ""))
 
-DEFAULT_ROW_KZ = {"name": "", "qty": 1, "purchase_price_ddp": 0.0, "extra_cost": 0.0}
+DEFAULT_ROW_KZ = {"name": "", "qty": 1, "purchase_price_ddp": 0.0, "extra_cost": 0.0,
+                   "sale_price_manual": 0.0}
 DEFAULT_ROW_FX = {"name": "", "unit": "", "qty": 1, "price_fca": 0.0, "sale_price_kzt": 0.0,
                    "duty_rate_pct": 5.0, "truck_count": 1, "overhead": 0.0, "extra_cost": 0.0,
                    "country": "", "tnved": "", "transport": ""}
@@ -1038,7 +1107,8 @@ if lot_type == "kz":
     if items_seed_key not in st.session_state:
         current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_KZ)]
         st.session_state[items_seed_key] = pd.DataFrame(
-            current_items, columns=["name", "qty", "purchase_price_ddp", "extra_cost"])
+            current_items,
+            columns=["name", "qty", "purchase_price_ddp", "extra_cost", "sale_price_manual"])
     # Streamlit's "small"/"medium"/"large" width categories are rough hints,
     # not sized to the label's actual text - a long header still truncates
     # inside a "medium" column. Explicit pixel widths (supported alongside
@@ -1056,6 +1126,14 @@ if lot_type == "kz":
             "extra_cost": st.column_config.NumberColumn(
                 "Доп.расходы, тнг", help="Прочие расходы по товару, тенге.",
                 min_value=0, step=1000, format="%.2f", width=150),
+            "sale_price_manual": st.column_config.NumberColumn(
+                "Цена продажи (если задал заказчик), тнг",
+                help="Заполняйте, только если заказчик сам назвал цену за штуку. "
+                     "Excel возьмёт эту цену как есть вместо своего расчёта "
+                     "«цена закупки × коэффициент наценки» для этой позиции - "
+                     "коэффициент наценки лота на неё влиять не будет. "
+                     "Оставьте 0, если цену считаем сами по коэффициенту (обычный случай).",
+                min_value=0, step=100, format="%.2f", width=280),
         },
         key=items_editor_key,
     )
@@ -1066,6 +1144,33 @@ if lot_type == "kz":
         normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")
     ]
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
+
+    # Purely informational - nothing here feeds back into Excel. When the
+    # customer names their own price, the lot's markup_coef doesn't apply to
+    # that item at all, so this is the closest read on what markup their
+    # price actually works out to, given our purchase price - lets you
+    # sanity-check "is this even profitable" at a glance instead of only
+    # finding out once the Excel is open.
+    priced_items = [it for it in items if it["purchase_price_ddp"] > 0]
+    manual_priced = [it for it in priced_items if it["sale_price_manual"] > 0]
+    if manual_priced:
+        hints = ", ".join(
+            f"«{it['name']}» — {it['sale_price_manual'] / it['purchase_price_ddp']:.3f}"
+            for it in manual_priced
+        )
+        st.caption(f"Фактический коэффициент наценки по цене заказчика: {hints}.")
+
+    # Read by the markup_coef input below (Step 05) to decide whether to
+    # lock itself. Unlike the foreign template - where the coefficient and
+    # the manual price are two unrelated numbers feeding completely
+    # different formulas (one is an internal cost/duty basis, the other the
+    # actual customer price) - the kz coefficient and a manual price compute
+    # the *same* thing (an item's sale price), so having both editable for
+    # the same item is a genuine conflict, not just visual clutter. Only
+    # lock it once EVERY priced item has its own manual price, though - as
+    # long as even one item still relies on the coefficient, disabling it
+    # would break that item's price instead of preventing a conflict.
+    kz_coef_locked = bool(priced_items) and len(manual_priced) == len(priced_items)
 else:
     cols = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
             "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
@@ -1140,10 +1245,17 @@ with right_col:
     st.text_input("Заказчик", key=k("supplier"), placeholder="Введите заказчика...")
     if lot_type == "kz":
         st.number_input("Коэффициент наценки (> 1)", key=k("markup_coef"),
-                         min_value=1.01, step=0.05, format="%.2f")
+                         min_value=1.0001, step=0.0001, format="%.4f",
+                         disabled=kz_coef_locked,
+                         help=("Недоступен: у всех позиций лота задана ручная цена "
+                               "продажи заказчика (см. таблицу позиций выше), поэтому "
+                               "коэффициент сейчас нигде не используется - обнулите "
+                               "ручную цену хотя бы у одной позиции, чтобы снова его "
+                               "редактировать."
+                               if kz_coef_locked else None))
     else:
         st.number_input("Коэфф. наценки (DAP → Вход DAP, > 1)", key=k("markup_coef"),
-                         min_value=1.01, step=0.05, format="%.2f")
+                         min_value=1.0001, step=0.0001, format="%.4f")
         st.number_input("НДС на ввоз, %", key=k("vat_rate"),
                          min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
 
