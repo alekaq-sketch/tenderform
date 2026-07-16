@@ -284,25 +284,31 @@ st.markdown(
 
   [data-testid="stToast"] { font-family: "Inter", sans-serif; }
 
-  /* Reset icon buttons ("🔄" only, no label) - compact and square, distinct
-     from the full-width text buttons elsewhere (Добавить лот, Сформировать,
-     etc.). Targeted via st.container(key=...) wrapper classes rather than
-     button content (CSS can't select on text), matched by prefix since the
-     per-lot ones carry a dynamic lot id suffix. */
+  /* Reset icon buttons (Material "restart_alt" icon, no text label) -
+     square and consistently sized, distinct from the full-width text
+     buttons elsewhere (Добавить лот, Сформировать, etc.). Targeted via
+     st.container(key=...) wrapper classes rather than button content (CSS
+     can't select on text), matched by prefix since the per-lot ones carry
+     a dynamic lot id suffix. Sized to roughly match the badge's own height
+     (padding 0.5rem*2 + its two text lines) so the header row reads as one
+     aligned unit instead of a tiny button dwarfed by its neighbours. */
   .st-key-header_reset_btn button,
   [class*="st-key-icon_reset_items_"] button,
   [class*="st-key-icon_reset_header_"] button {
-    width: 2.15rem !important;
-    height: 2.15rem !important;
-    min-width: 2.15rem !important;
+    width: 2.6rem !important;
+    height: 2.6rem !important;
+    min-width: 2.6rem !important;
     padding: 0 !important;
-    font-size: 1.05rem !important;
-    line-height: 1 !important;
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
   }
-  .st-key-header_reset_btn { margin-top: 0.15rem; }
+  .st-key-header_reset_btn button span[data-testid="stIconMaterial"],
+  [class*="st-key-icon_reset_items_"] button span[data-testid="stIconMaterial"],
+  [class*="st-key-icon_reset_header_"] button span[data-testid="stIconMaterial"] {
+    font-size: 1.2rem !important;
+    color: var(--teal-deep) !important;
+  }
   /* lot-type radio, rendered as pill-style segmented control */
   div[role="radiogroup"] {
     gap: 0.5rem;
@@ -460,142 +466,132 @@ st.session_state.setdefault("confirm_reset_all", False)
 
 # ------------------------------------------------- Плавающий калькулятор ---
 # Обычный арифметический калькулятор "для прикидок", не связанный с бизнес-
-# логикой формы. Живёт в собственном iframe и держит своё состояние в JS
-# (window.frameElement), поэтому не сбрасывается при каждом st.rerun формы -
-# перепрошивка позиции происходит один раз при загрузке фрейма, а сам фрейм
-# Streamlit не перемонтирует, пока его HTML не меняется между прогонами.
+# логикой формы.
+#
+# Earlier versions positioned the IFRAME itself with position:fixed (via
+# window.frameElement) and resized it to match its own content. That broke
+# on at least one real laptop - "калькулятор пропал, не вижу его" - and the
+# likely reason is a well-known CSS trap: position:fixed stops being fixed
+# to the *viewport* and instead becomes fixed to the nearest ancestor that
+# has a `transform`/`filter`/`perspective`/`will-change` set, and Streamlit's
+# own component-mounting machinery is exactly the kind of code that sets
+# `transform` on wrapper divs for its mount/fade transitions. Depending on
+# which ancestor picks that up, the iframe (and everything positioned
+# relative to it) can end up parked off-screen or clipped - invisible, with
+# no error anywhere, and not reproducible on every machine.
+#
+# The fix: don't fight the iframe's own ancestry at all. Build the
+# calculator once and append it as a direct child of window.parent.document
+# body - the top-level page, not nested inside any Streamlit component
+# wrapper - so position:fixed has nothing above it to get hijacked by. The
+# iframe itself goes back to being a normal, invisible, zero-footprint
+# script loader (height=1, never resized/repositioned), which also means
+# the old "dead click zone" problem structurally can't recur - there's
+# nothing iframe-shaped covering the page anymore, ever.
 st.iframe(
     r"""
-<style>
-  #calc-shell { position: fixed; top: 110px; right: 22px; z-index: 999999;
-    font-family: Inter, sans-serif; }
-  #calc-box { width: 220px; background: linear-gradient(180deg,#f4f8ff,#e7f0ff);
-    border: 1px solid #c9dbf7; border-radius: 10px;
-    box-shadow: 0 12px 28px rgba(0,0,0,0.35); overflow: hidden; }
-  #calc-head { display:flex; justify-content:space-between; align-items:center;
-    background:#1c6fe0; color:#fff; font-size:12.5px; font-weight:600;
-    padding:6px 10px; cursor:pointer; user-select:none; }
-  #calc-toggle { opacity:0.85; }
-  #calc-screen { font-family:"IBM Plex Mono",monospace; text-align:right;
-    font-size:20px; padding:10px 12px; color:#14213f; background:#fff;
-    border-bottom:1px solid #c9dbf7; overflow:hidden; text-overflow:ellipsis; }
-  #calc-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
-    background:#c9dbf7; }
-  #calc-grid button { border:none; background:#fff; padding:11px 0;
-    font-size:14.5px; color:#14213f; cursor:pointer; font-family:Inter,sans-serif; }
-  #calc-grid button:hover { background:#eaf4ff; }
-  #calc-grid button.op { background:#e7f0ff; color:#1c6fe0; font-weight:600; }
-  #calc-grid button.eq { background:#17a3f5; color:#fff; font-weight:700; grid-column: span 3; }
-  #calc-grid button.eq:hover { background:#0f86d0; }
-  #calc-body.collapsed { display:none; }
-</style>
-<div id="calc-shell">
-  <div id="calc-box">
-    <div id="calc-head">
-      <span>Калькулятор</span><span id="calc-toggle">▸</span>
-    </div>
-    <div id="calc-body" class="collapsed">
-      <div id="calc-screen">0</div>
-      <div id="calc-grid"></div>
-    </div>
-  </div>
-</div>
 <script>
 (function () {
-  var screen = document.getElementById('calc-screen');
-  var grid = document.getElementById('calc-grid');
-  var keys = ['(',')','C','⌫', '7','8','9','÷', '4','5','6','×', '1','2','3','-', '0','00','.','+', '%','='];
-  var expr = '';
-
-  // Раздельные разряды пробелом при отображении ("500 000" вместо "500000"),
-  // чтобы с одного взгляда отличить 500 тысяч от 5 миллионов - как и везде
-  // в форме. Форматируется только ЭКРАН: сама expr остаётся "чистой"
-  // строкой без пробелов, поэтому на вычисления (и на то, что попадёт в
-  // регэксп-проверку безопасности перед eval) это не влияет.
-  function formatNumber(numStr) {
-    var parts = numStr.split('.');
-    var intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-    return parts.length > 1 ? intPart + '.' + parts[1] : intPart;
-  }
-
-  function formatExpr(str) {
-    return str.replace(/\d+(\.\d*)?/g, function (m) { return formatNumber(m); });
-  }
-
-  function render() { screen.textContent = expr === '' ? '0' : formatExpr(expr); }
-
-  function press(k) {
-    if (k === 'C') { expr = ''; }
-    else if (k === '⌫') { expr = expr.slice(0, -1); }
-    else if (k === '=') {
-      try {
-        var safe = expr.replace(/×/g, '*').replace(/÷/g, '/').replace(/%/g, '/100');
-        if (!/^[0-9+\-*/.() ]*$/.test(safe)) throw new Error('bad');
-        var result = Function('"use strict"; return (' + safe + ')')();
-        expr = String(Math.round(result * 1e8) / 1e8);
-      } catch (e) { expr = 'Ошибка'; }
-    } else { expr = (expr === 'Ошибка' ? '' : expr) + k; }
-    render();
-  }
-
-  keys.forEach(function (k) {
-    var btn = document.createElement('button');
-    btn.textContent = k;
-    if (['÷','×','-','+','%'].includes(k)) btn.className = 'op';
-    if (k === '=') btn.className = 'eq';
-    btn.onclick = function () { press(k); };
-    grid.appendChild(btn);
-  });
-
-  // Escape the iframe box so the calculator floats over the whole page,
-  // pinned to the right, regardless of where this component sits in the
-  // Streamlit layout. Same-origin iframe, so parent DOM access is allowed.
   try {
-    var fe = window.frameElement;
-    var shell = document.getElementById('calc-shell');
-    var body = document.getElementById('calc-body');
-    var toggle = document.getElementById('calc-toggle');
-    var head = document.getElementById('calc-head');
-    if (fe) {
-      fe.style.position = 'fixed';
-      fe.style.top = '110px';
-      fe.style.right = '22px';
-      fe.style.border = 'none';
-      fe.style.zIndex = 999999;
-      fe.style.pointerEvents = 'auto';
-      shell.style.pointerEvents = 'auto';
+    var doc = window.parent.document;
+    if (doc.getElementById('calc-shell')) { return; }
 
-      // THE ACTUAL BUG this fixes: the iframe used to be a fixed 260px x
-      // 100vh rectangle regardless of what was visibly drawn inside it.
-      // Iframes can't be "clicked through" in their empty areas - so that
-      // whole strip, top of page to bottom, silently ate clicks meant for
-      // the form underneath on any viewport where the form's right edge
-      // fell inside those 260px. Sizing the iframe to the widget's *actual*
-      // rendered footprint (re-measured on toggle) means the dead click
-      // zone is never bigger than the visible calculator. This only reads
-      // shell's own bounding box - entirely inside this iframe's own DOM,
-      // no cross-frame access needed, so it can't silently fail the way a
-      // window.parent read could in some hosting setups (that's what broke
-      // the calculator outright in an earlier version of this fix - it hid
-      // itself whenever it couldn't confirm the browser window was wide
-      // enough, and that check itself was unreliable).
-      function fitFrame() {
-        var rect = shell.getBoundingClientRect();
-        fe.style.width = Math.ceil(rect.width) + 'px';
-        fe.style.height = Math.ceil(rect.height) + 'px';
-      }
+    var style = doc.createElement('style');
+    style.textContent = `
+      #calc-shell { position: fixed; top: 110px; right: 22px; z-index: 999999;
+        font-family: Inter, sans-serif; }
+      #calc-box { width: 220px; background: linear-gradient(180deg,#f4f8ff,#e7f0ff);
+        border: 1px solid #c9dbf7; border-radius: 10px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.35); overflow: hidden; }
+      #calc-head { display:flex; justify-content:space-between; align-items:center;
+        background:#1c6fe0; color:#fff; font-size:12.5px; font-weight:600;
+        padding:6px 10px; cursor:pointer; user-select:none; }
+      #calc-toggle { opacity:0.85; }
+      #calc-screen { font-family:"IBM Plex Mono",monospace; text-align:right;
+        font-size:20px; padding:10px 12px; color:#14213f; background:#fff;
+        border-bottom:1px solid #c9dbf7; overflow:hidden; text-overflow:ellipsis; }
+      #calc-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+        background:#c9dbf7; }
+      #calc-grid button { border:none; background:#fff; padding:11px 0;
+        font-size:14.5px; color:#14213f; cursor:pointer; font-family:Inter,sans-serif; }
+      #calc-grid button:hover { background:#eaf4ff; }
+      #calc-grid button.op { background:#e7f0ff; color:#1c6fe0; font-weight:600; }
+      #calc-grid button.eq { background:#17a3f5; color:#fff; font-weight:700; grid-column: span 3; }
+      #calc-grid button.eq:hover { background:#0f86d0; }
+      #calc-body.collapsed { display:none; }
+    `;
+    doc.head.appendChild(style);
 
-      head.addEventListener('click', function () {
-        var collapsed = body.classList.toggle('collapsed');
-        toggle.textContent = collapsed ? '▸' : '▾';
-        fitFrame();
-      });
+    var shell = doc.createElement('div');
+    shell.id = 'calc-shell';
+    shell.innerHTML =
+      '<div id="calc-box">' +
+        '<div id="calc-head">' +
+          '<span>Калькулятор</span><span id="calc-toggle">▸</span>' +
+        '</div>' +
+        '<div id="calc-body" class="collapsed">' +
+          '<div id="calc-screen">0</div>' +
+          '<div id="calc-grid"></div>' +
+        '</div>' +
+      '</div>';
+    doc.body.appendChild(shell);
 
-      // Starts collapsed (see the HTML above) specifically so the default
-      // dead-click footprint is just the small header pill, not the full
-      // 220px-tall open calculator - opening it is then an explicit choice.
-      fitFrame();
+    var screen = shell.querySelector('#calc-screen');
+    var grid = shell.querySelector('#calc-grid');
+    var body = shell.querySelector('#calc-body');
+    var toggle = shell.querySelector('#calc-toggle');
+    var head = shell.querySelector('#calc-head');
+    var keys = ['(',')','C','⌫', '7','8','9','÷', '4','5','6','×', '1','2','3','-', '0','00','.','+', '%','='];
+    var expr = '';
+
+    // Раздельные разряды пробелом при отображении ("500 000" вместо "500000"),
+    // чтобы с одного взгляда отличить 500 тысяч от 5 миллионов - как и везде
+    // в форме. Форматируется только ЭКРАН: сама expr остаётся "чистой"
+    // строкой без пробелов, поэтому на вычисления (и на то, что попадёт в
+    // регэксп-проверку безопасности перед eval) это не влияет.
+    function formatNumber(numStr) {
+      var parts = numStr.split('.');
+      var intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+      return parts.length > 1 ? intPart + '.' + parts[1] : intPart;
     }
+
+    function formatExpr(str) {
+      return str.replace(/\d+(\.\d*)?/g, function (m) { return formatNumber(m); });
+    }
+
+    function render() { screen.textContent = expr === '' ? '0' : formatExpr(expr); }
+
+    function press(k) {
+      if (k === 'C') { expr = ''; }
+      else if (k === '⌫') { expr = expr.slice(0, -1); }
+      else if (k === '=') {
+        try {
+          var safe = expr.replace(/×/g, '*').replace(/÷/g, '/').replace(/%/g, '/100');
+          if (!/^[0-9+\-*/.() ]*$/.test(safe)) throw new Error('bad');
+          var result = Function('"use strict"; return (' + safe + ')')();
+          expr = String(Math.round(result * 1e8) / 1e8);
+        } catch (e) { expr = 'Ошибка'; }
+      } else { expr = (expr === 'Ошибка' ? '' : expr) + k; }
+      render();
+    }
+
+    keys.forEach(function (k) {
+      var btn = doc.createElement('button');
+      btn.textContent = k;
+      if (['÷','×','-','+','%'].includes(k)) btn.className = 'op';
+      if (k === '=') btn.className = 'eq';
+      btn.onclick = function () { press(k); };
+      grid.appendChild(btn);
+    });
+
+    // Starts collapsed (see the markup above) so it never covers more of
+    // the page than the small header pill until the user explicitly opens
+    // it - matters even more now that nothing needs to be resized to
+    // achieve that, it's just the element's natural collapsed height.
+    head.addEventListener('click', function () {
+      var collapsed = body.classList.toggle('collapsed');
+      toggle.textContent = collapsed ? '▸' : '▾';
+    });
   } catch (e) {}
 })();
 </script>
@@ -633,13 +629,86 @@ st.iframe(
     height=1,
 )
 
+# --------------------------------------------- Русские месяцы в календаре --
+# st.date_input's calendar popup (BaseWeb) has no locale setting exposed
+# from Python - it always renders English month/weekday names. The popup is
+# torn down and rebuilt from scratch every time it opens (and again on every
+# month/year navigation click), so a one-off translation right after load
+# wouldn't survive the first click - a MutationObserver re-translates it on
+# every redraw instead. Same-origin iframe access as the other utility
+# scripts here, so no CSP/cross-origin issue.
+st.iframe(
+    r"""
+<script>
+(function () {
+  try {
+    var doc = window.parent.document;
+    if (doc.__ruCalendarObserverInstalled) { return; }
+    doc.__ruCalendarObserverInstalled = true;
+
+    var MONTHS = {
+      'January': 'Январь', 'February': 'Февраль', 'March': 'Март', 'April': 'Апрель',
+      'May': 'Май', 'June': 'Июнь', 'July': 'Июль', 'August': 'Август',
+      'September': 'Сентябрь', 'October': 'Октябрь', 'November': 'Ноябрь', 'December': 'Декабрь'
+    };
+    var WEEKDAYS = {
+      'Monday': 'Пн', 'Tuesday': 'Вт', 'Wednesday': 'Ср', 'Thursday': 'Чт',
+      'Friday': 'Пт', 'Saturday': 'Сб', 'Sunday': 'Вс'
+    };
+
+    function translateMonthButton(btn) {
+      // The month/year header buttons share markup; only the month one's
+      // direct text node matches a key in MONTHS, so the year button (just
+      // digits) is naturally left alone without special-casing it.
+      for (var i = 0; i < btn.childNodes.length; i++) {
+        var node = btn.childNodes[i];
+        if (node.nodeType === 3) {
+          var text = node.textContent.trim();
+          if (MONTHS[text]) { node.textContent = MONTHS[text]; }
+          break;
+        }
+      }
+    }
+
+    function translateCalendars() {
+      doc.querySelectorAll('[data-baseweb="calendar"] button[aria-haspopup="true"]')
+        .forEach(translateMonthButton);
+      doc.querySelectorAll('[data-baseweb="calendar"] div[alt]').forEach(function (el) {
+        var ru = WEEKDAYS[el.getAttribute('alt')];
+        if (ru && el.textContent !== ru) { el.textContent = ru; }
+      });
+      // The month-picker dropdown (opened by clicking the month button) is
+      // a <ul role="listbox"> rendered in its own portal, not nested under
+      // [data-baseweb="calendar"] - matched globally instead. Selectboxes
+      // elsewhere in the app (currency, lot type) use the same role but
+      // their options never match an English month name, so this is safe.
+      doc.querySelectorAll('ul[role="listbox"] li[role="option"]').forEach(function (li) {
+        var text = li.textContent.trim();
+        if (MONTHS[text]) { li.textContent = MONTHS[text]; }
+      });
+    }
+
+    translateCalendars();
+    new MutationObserver(translateCalendars)
+      .observe(doc.body, { childList: true, subtree: true, characterData: true });
+  } catch (e) {}
+})();
+</script>
+""",
+    height=1,
+)
+
 # ---------------------------------------------------------------- Header ---
 # Split across real st.columns (rather than one raw-HTML flex row) so the
 # reset icon button - a genuine widget - can sit directly next to the
 # "Лотов в тендере" badge without resorting to absolute-position CSS hacks
 # to fake alignment with markup it isn't actually a DOM sibling of.
+# vertical_alignment="center" matters here: the title column is two lines
+# tall (title + subtitle) while the badge/button are single-line, so "top"
+# alignment left them visually stranded near the top edge instead of
+# centered against the header block they belong to.
 _logo_b64 = load_logo_b64(LOGO_PATH)
-title_col, badge_col, reset_col = st.columns([5, 1.35, 0.55], vertical_alignment="top")
+title_col, badge_col, reset_col = st.columns([5, 1.5, 0.7], vertical_alignment="center")
 with title_col:
     st.markdown(
         f"""
@@ -665,7 +734,13 @@ with badge_col:
     )
 with reset_col:
     with st.container(key="header_reset_btn"):
-        st.button("🔄", key="btn_reset_all_start", on_click=start_reset_confirm,
+        # icon=":material/..." renders one of Streamlit's built-in Material
+        # Symbols as a crisp inline SVG - unlike an emoji glyph, it doesn't
+        # depend on the OS/browser having a matching emoji font installed,
+        # and it matches the flat, monochrome icon language the rest of the
+        # app already uses (calculator, buttons) instead of standing out.
+        st.button("", key="btn_reset_all_start", icon=":material/restart_alt:",
+                  on_click=start_reset_confirm,
                   help="Начать новый тендер (очистить всё)")
 
 if st.session_state["confirm_reset_all"]:
@@ -918,13 +993,13 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
-items_heading_col, items_reset_col = st.columns([9, 1])
+items_heading_col, items_reset_col = st.columns([9, 1], vertical_alignment="center")
 with items_heading_col:
     step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
 with items_reset_col:
     with st.container(key=f"icon_reset_items_{lot_type}_{active_id}"):
-        st.button("🔄", key=f"btn_reset_items_{lot_type}_{active_id}",
-                  on_click=reset_items,
+        st.button("", key=f"btn_reset_items_{lot_type}_{active_id}",
+                  icon=":material/restart_alt:", on_click=reset_items,
                   help="Очистить таблицу позиций этого лота до одной пустой строки.")
 st.caption("Чтобы удалить строку: выделите её слева (наведите на номер строки) "
            "и нажмите на значок корзины сверху таблицы, либо клавишу Delete — "
@@ -1029,13 +1104,13 @@ else:
 
 # --------------------------------------------------- Step 3: данные лота ---
 st.divider()
-header_heading_col, header_reset_col = st.columns([9, 1])
+header_heading_col, header_reset_col = st.columns([9, 1], vertical_alignment="center")
 with header_heading_col:
     step_heading("05", f"Данные лота {lot_ids.index(active_id) + 1}")
 with header_reset_col:
     with st.container(key=f"icon_reset_header_{lot_type}_{active_id}"):
-        st.button("🔄", key=f"btn_reset_header_{lot_type}_{active_id}",
-                  on_click=reset_lot_header,
+        st.button("", key=f"btn_reset_header_{lot_type}_{active_id}",
+                  icon=":material/restart_alt:", on_click=reset_lot_header,
                   help="Сбросить менеджера, заказчика, даты, наценку, курс и "
                        "остальные поля этого лота до значений по умолчанию.")
 
