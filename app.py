@@ -382,7 +382,6 @@ def init_state() -> None:
     st.session_state.setdefault("next_lot_id_foreign", 1)
     st.session_state.setdefault("active_lot_kz", 0)
     st.session_state.setdefault("active_lot_foreign", 0)
-    st.session_state.setdefault("raw_text", "")
     st.session_state.setdefault("generated_file", None)
     st.session_state.setdefault("generated_name", "расчёт.xlsx")
 
@@ -1136,6 +1135,29 @@ def apply_pasted_items() -> None:
 # last extracted from *this* uploaded_file. Grouping them under one upload
 # with the LLM option tucked into a popover makes that shared-source
 # relationship visually obvious instead of implied.
+#
+# THE ACTUAL BUG this key= fixes: neither the uploader nor raw_text used to
+# be scoped by lot at all - one file_uploader call with no key, one global
+# "raw_text" session_state entry, shared across every lot AND both lot
+# types. Switching from "Казахстан → Казахстан" to "Закупка за рубежом"
+# (or just between Лот 1/Лот 2) kept showing whatever was last uploaded
+# anywhere, because it was all along literally the same widget/value no
+# matter which lot was on screen. Keying both by lot_type+active_id makes
+# each lot's upload genuinely its own.
+#
+# One real limitation this can't paper over: st.file_uploader's own
+# selection can't be restored from Python (no widget lets server-side code
+# hand it a file - a deliberate browser security restriction, not a
+# Streamlit gap), so switching away from a lot and back will always show
+# "no file chosen" again in the picker itself, even for a lot that already
+# has one attached. What DOES survive the switch correctly is the part
+# that actually matters afterward - the extracted text and the items it
+# already populated into the table - since raw_text is now namespaced the
+# same way and was never tied to any widget's own key to begin with.
+uploaded_file_key = f"file_uploader_{lot_type}_{active_id}"
+raw_text_key = f"raw_text_{lot_type}_{active_id}"
+st.session_state.setdefault(raw_text_key, "")
+
 st.divider()
 step_heading("03", f"Загрузите документ для лота {lot_ids.index(active_id) + 1}")
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -1144,6 +1166,7 @@ uploaded_file = st.file_uploader(
     "ТЗ или спецификация (.docx, .xlsx, .pdf)",
     type=["docx", "xlsx", "pdf"],
     accept_multiple_files=False,
+    key=uploaded_file_key,
 )
 st.caption("Достаёт наименование/ед.изм/кол-во/цену из документа. Остальное — "
            "валюту, пошлину, цену продажи — заполните вручную в таблице.")
@@ -1172,7 +1195,7 @@ if uploaded_file and recognize_btn:
         # 50000 chars (~12k tokens) comfortably covers large multi-page
         # specs while still capping worst-case cost/latency on a truly
         # pathological upload.
-        st.session_state["raw_text"] = raw_text[:50000]
+        st.session_state[raw_text_key] = raw_text[:50000]
         if lot_type == "kz":
             st.session_state[items_state_key] = [
                 normalize_item_kz({"name": it.get("name"), "qty": it.get("qty"),
@@ -1197,12 +1220,12 @@ if uploaded_file and recognize_btn:
             os.unlink(tmp_path)
 
 if uploaded_file and llm_btn:
-    if not st.session_state["raw_text"]:
+    if not st.session_state[raw_text_key]:
         st.warning("Сначала загрузите документ и нажмите «Распознать».")
     else:
         try:
             with st.spinner("Claude анализирует документ..."):
-                result = extract_items_llm(st.session_state["raw_text"], api_key=api_key)
+                result = extract_items_llm(st.session_state[raw_text_key], api_key=api_key)
             extracted_items = result.get("items", [])
             if lot_type == "kz":
                 st.session_state[items_state_key] = [
@@ -1224,10 +1247,10 @@ if uploaded_file and llm_btn:
         except Exception as exc:
             st.error(f"Ошибка LLM: {exc}")
 
-if st.session_state["raw_text"]:
+if st.session_state[raw_text_key]:
     with st.expander("Сырой текст документа", expanded=False):
         st.text_area(
-            "raw_preview", st.session_state["raw_text"], height=180,
+            "raw_preview", st.session_state[raw_text_key], height=180,
             label_visibility="collapsed", disabled=True,
         )
 
