@@ -2,6 +2,7 @@
 
 import base64
 import os
+import re
 import tempfile
 from datetime import date
 
@@ -303,7 +304,6 @@ st.markdown(
      aligned unit instead of a tiny button dwarfed by its neighbours. */
   .st-key-header_reset_btn button,
   [class*="st-key-icon_reset_items_"] button,
-  [class*="st-key-icon_undo_items_"] button,
   [class*="st-key-icon_reset_header_"] button {
     width: 2.6rem !important;
     height: 2.6rem !important;
@@ -315,7 +315,6 @@ st.markdown(
   }
   .st-key-header_reset_btn button span[data-testid="stIconMaterial"],
   [class*="st-key-icon_reset_items_"] button span[data-testid="stIconMaterial"],
-  [class*="st-key-icon_undo_items_"] button span[data-testid="stIconMaterial"],
   [class*="st-key-icon_reset_header_"] button span[data-testid="stIconMaterial"] {
     font-size: 1.2rem !important;
     color: var(--teal-deep) !important;
@@ -378,22 +377,27 @@ def init_state() -> None:
     st.session_state.setdefault("generated_name", "расчёт.xlsx")
 
 
+_NUMBER_JUNK_RE = re.compile(r"[^\d,.\-]")
+
+
 def parse_pasted_number(text: str):
-    """Parses a number cell copied from Excel, regardless of locale. Excel
-    in a RU/KZ locale writes currency/number-formatted cells to the
-    clipboard as text with a comma decimal separator and a space (or NBSP)
-    thousands grouping - e.g. "8 500,00" for 8500, "2 000,50" for 2000.5.
-    Streamlit's data_editor doesn't understand that when pasted straight
-    into the table (it silently zeroes the cell, or mangles it - "2000,50"
-    becomes 200050, the comma just vanishes). That can't be fixed after the
-    fact from Python once it's already in session_state - by then the
-    table has already mis-parsed it and the original text is gone - so this
-    is used by the "paste as text" fallback below, which hands us the raw
-    clipboard text before anything else touches it.
-    Returns None if the cell doesn't look like a number at all (so callers
-    can tell "empty/not a number" apart from a genuine 0)."""
-    t = text.strip().replace("\xa0", " ")
-    if not t:
+    """Parses a number cell copied from Excel, regardless of locale or
+    formatting. Excel writes formatted cells to the clipboard as whatever
+    they're displayed as, not the raw number - a currency cell might be
+    "8 500,00 ₸" (RU locale, comma decimal + space thousands + tenge sign),
+    "$8,500.00", or anything else depending on the cell's own number format.
+    Streamlit's data_editor doesn't understand any of that pasted straight
+    into the table (silently zeroes the cell, or mangles it), and it can't
+    be fixed after the fact from Python once it's in session_state - by
+    then the original text is gone - so this is used by the "paste as text"
+    fallback below, which hands us the raw clipboard text before anything
+    else touches it. Stripping everything except digits/separators first
+    (rather than trying to special-case every currency symbol or unit
+    suffix that might show up) is what makes this work for *any* of them.
+    Returns None if nothing number-like is left (so callers can tell
+    "empty/not a number" apart from a genuine 0)."""
+    t = _NUMBER_JUNK_RE.sub("", text)
+    if not t or t in ("-", ".", ","):
         return None
     has_comma, has_dot = "," in t, "." in t
     if has_comma and has_dot:
@@ -405,9 +409,7 @@ def parse_pasted_number(text: str):
         else:
             t = t.replace(",", "")
     elif has_comma:
-        t = t.replace(" ", "").replace(",", ".")
-    else:
-        t = t.replace(" ", "")
+        t = t.replace(",", ".")
     try:
         return float(t)
     except ValueError:
@@ -545,33 +547,38 @@ def cancel_reset_confirm() -> None:
 
 st.session_state.setdefault("confirm_reset_all", False)
 
-# ------------------------------------------------- Плавающий калькулятор ---
-# Обычный арифметический калькулятор "для прикидок", не связанный с бизнес-
-# логикой формы.
-#
-# Earlier versions positioned the IFRAME itself with position:fixed (via
-# window.frameElement) and resized it to match its own content. That broke
-# on at least one real laptop - "калькулятор пропал, не вижу его" - and the
-# likely reason is a well-known CSS trap: position:fixed stops being fixed
-# to the *viewport* and instead becomes fixed to the nearest ancestor that
-# has a `transform`/`filter`/`perspective`/`will-change` set, and Streamlit's
-# own component-mounting machinery is exactly the kind of code that sets
-# `transform` on wrapper divs for its mount/fade transitions. Depending on
-# which ancestor picks that up, the iframe (and everything positioned
-# relative to it) can end up parked off-screen or clipped - invisible, with
-# no error anywhere, and not reproducible on every machine.
-#
-# The fix: don't fight the iframe's own ancestry at all. Build the
-# calculator once and append it as a direct child of window.parent.document
-# body - the top-level page, not nested inside any Streamlit component
-# wrapper - so position:fixed has nothing above it to get hijacked by. The
-# iframe itself goes back to being a normal, invisible, zero-footprint
-# script loader (height=1, never resized/repositioned), which also means
-# the old "dead click zone" problem structurally can't recur - there's
-# nothing iframe-shaped covering the page anymore, ever.
+# ---------------------------------------------------- Служебные JS-скрипты --
+# Four tiny utility scripts (calculator, number-input auto-select, RU
+# calendar translation, pills first-paint fix), merged into one
+# st.iframe(..., height=1) call instead of four separate ones - each is
+# invisible on its own, but Streamlit puts a fixed gap between every element
+# it renders, iframe or not, so four separate near-zero-height iframes still
+# added up to real dead space between the page's top edge and the "Heat
+# Energy" heading. None of these need to be separate Streamlit elements -
+# they only ever reach into window.parent.document.
 st.iframe(
     r"""
 <script>
+// ------------------------------------------------- Плавающий калькулятор ---
+// Обычный арифметический калькулятор "для прикидок", не связанный с бизнес-
+// логикой формы.
+//
+// Earlier versions positioned the IFRAME itself with position:fixed (via
+// window.frameElement) and resized it to match its own content. That broke
+// on at least one real laptop - "калькулятор пропал, не вижу его" - and the
+// likely reason is a well-known CSS trap: position:fixed stops being fixed
+// to the *viewport* and instead becomes fixed to the nearest ancestor that
+// has a transform/filter/perspective/will-change set, and Streamlit's own
+// component-mounting machinery is exactly the kind of code that sets
+// transform on wrapper divs for its mount/fade transitions. Depending on
+// which ancestor picks that up, the iframe (and everything positioned
+// relative to it) can end up parked off-screen or clipped - invisible, with
+// no error anywhere, and not reproducible on every machine.
+//
+// The fix: don't fight the iframe's own ancestry at all. Build the
+// calculator once and append it as a direct child of window.parent.document
+// body - the top-level page, not nested inside any Streamlit component
+// wrapper - so position:fixed has nothing above it to get hijacked by.
 (function () {
   try {
     var doc = window.parent.document;
@@ -676,23 +683,15 @@ st.iframe(
   } catch (e) {}
 })();
 </script>
-""",
-    height=1,
-)
-
-# ------------------------------------------ Автовыделение чисел в полях ---
-# st.number_input, в отличие от табличных редакторов, не выделяет текущее
-# значение при клике/фокусе - приходится сначала вручную стирать то, что
-# там уже написано (например "0"), и только потом печатать своё. Родного
-# параметра под это в Streamlit нет, поэтому вешаем делегированный
-# обработчик на document родительского окна - тот же приём, что и у
-# калькулятора ниже (iframe того же происхождения, доступ разрешён).
-# Обработчик висит на document, а не на конкретных полях, поэтому
-# переживает любые перерисовки Streamlit (поля в DOM пересоздаются -
-# слушатель на их родителе остаётся).
-st.iframe(
-    """
 <script>
+// ------------------------------------------ Автовыделение чисел в полях ---
+// st.number_input, в отличие от табличных редакторов, не выделяет текущее
+// значение при клике/фокусе - приходится сначала вручную стирать то, что
+// там уже написано (например "0"), и только потом печатать своё. Родного
+// параметра под это в Streamlit нет, поэтому вешаем делегированный
+// обработчик на document родительского окна. Обработчик висит на document,
+// а не на конкретных полях, поэтому переживает любые перерисовки Streamlit
+// (поля в DOM пересоздаются - слушатель на их родителе остаётся).
 (function () {
   try {
     var doc = window.parent.document;
@@ -706,21 +705,14 @@ st.iframe(
   } catch (e) {}
 })();
 </script>
-""",
-    height=1,
-)
-
-# --------------------------------------------- Русские месяцы в календаре --
-# st.date_input's calendar popup (BaseWeb) has no locale setting exposed
-# from Python - it always renders English month/weekday names. The popup is
-# torn down and rebuilt from scratch every time it opens (and again on every
-# month/year navigation click), so a one-off translation right after load
-# wouldn't survive the first click - a MutationObserver re-translates it on
-# every redraw instead. Same-origin iframe access as the other utility
-# scripts here, so no CSP/cross-origin issue.
-st.iframe(
-    r"""
 <script>
+// --------------------------------------------- Русские месяцы в календаре --
+// st.date_input's calendar popup (BaseWeb) has no locale setting exposed
+// from Python - it always renders English month/weekday names. The popup is
+// torn down and rebuilt from scratch every time it opens (and again on every
+// month/year navigation click), so a one-off translation right after load
+// wouldn't survive the first click - a MutationObserver re-translates it on
+// every redraw instead.
 (function () {
   try {
     var doc = window.parent.document;
@@ -775,34 +767,28 @@ st.iframe(
   } catch (e) {}
 })();
 </script>
-""",
-    height=1,
-)
-
-# ------------------------------------------- Подсветка первого лота-пилюли -
-# The lot-pills widget (st.pills, "Лот 1" / "Лот 2" / ...) is correct
-# server-side from the very first render - active_id is always right - but
-# confirmed via DOM inspection: the very first time a given lot_type's pill
-# widget ever mounts in this browser tab (i.e. the first time you switch to
-# a lot type in a session), its frontend paints the selected pill as
-# unhighlighted (aria-checked="false", no data-selected) instead of
-# reflecting the value it was given. It corrects itself on any later rerun
-# of that *already-mounted* widget, so it's a first-paint sync glitch, not a
-# real state bug - but a synchronous st.rerun() from Python right after that
-# first render does NOT fix it (tried it): Streamlit aborts and restarts the
-# script fast enough that the browser never actually paints the broken frame
-# in between, so there's nothing for a second render of the same mounted
-# widget to visibly correct. Patching the DOM attributes directly, client-
-# side, sidesteps that entirely - the highlighted-pill style keys off these
-# exact attributes (confirmed: the CSS class name is identical between a
-# working and a broken pill, only aria-checked/data-selected differ).
-# Scoped to required single-select pill groups with exactly one option -
-# the only shape this bug has been seen in (a lot_type tab always starts
-# with exactly one lot the first time it's visited) - so a multi-lot pills
-# group a user has actually interacted with is never touched by this.
-st.iframe(
-    r"""
 <script>
+// ------------------------------------------- Подсветка первого лота-пилюли -
+// The lot-pills widget (st.pills, "Лот 1" / "Лот 2" / ...) is correct
+// server-side from the very first render - active_id is always right - but
+// confirmed via DOM inspection: the very first time a given lot_type's pill
+// widget ever mounts in this browser tab (i.e. the first time you switch to
+// a lot type in a session), its frontend paints the selected pill as
+// unhighlighted (aria-checked="false", no data-selected) instead of
+// reflecting the value it was given. It corrects itself on any later rerun
+// of that *already-mounted* widget, so it's a first-paint sync glitch, not a
+// real state bug - but a synchronous st.rerun() from Python right after that
+// first render does NOT fix it (tried it): Streamlit aborts and restarts the
+// script fast enough that the browser never actually paints the broken frame
+// in between, so there's nothing for a second render of the same mounted
+// widget to visibly correct. Patching the DOM attributes directly, client-
+// side, sidesteps that entirely - the highlighted-pill style keys off these
+// exact attributes (confirmed: the CSS class name is identical between a
+// working and a broken pill, only aria-checked/data-selected differ).
+// Scoped to required single-select pill groups with exactly one option -
+// the only shape this bug has been seen in (a lot_type tab always starts
+// with exactly one lot the first time it's visited) - so a multi-lot pills
+// group a user has actually interacted with is never touched by this.
 (function () {
   try {
     var doc = window.parent.document;
@@ -825,47 +811,6 @@ st.iframe(
     new MutationObserver(fixPills)
       .observe(doc.body, { childList: true, subtree: true, attributes: true,
                             attributeFilter: ['aria-checked', 'data-selected'] });
-  } catch (e) {}
-})();
-</script>
-""",
-    height=1,
-)
-
-# ------------------------------------------------- Ctrl+Z в таблице позиций
-# The items table (glide-data-grid) has no undo of its own - Ctrl+Z inside
-# it does nothing (confirmed by testing: typing into a cell and pressing
-# Ctrl+Z leaves the typed value in place). Real undo is implemented
-# server-side (push_items_history / undo_last_items_change in the Python
-# code, one history entry per actual table change) with a visible "undo"
-# icon button next to the table - this script just makes Ctrl+Z do the same
-# thing as clicking that button, so the shortcut a spreadsheet user reaches
-# for out of habit actually works. Scoped to keydowns whose target is
-# inside the currently-rendered items grid, so Ctrl+Z anywhere else on the
-# page (a text field, the browser itself) is left alone.
-st.iframe(
-    r"""
-<script>
-(function () {
-  try {
-    var doc = window.parent.document;
-    if (doc.__ruUndoShortcutInstalled) { return; }
-    doc.__ruUndoShortcutInstalled = true;
-
-    doc.addEventListener('keydown', function (e) {
-      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== 'z') { return; }
-      var target = e.target;
-      var insideGrid = target && (
-        target.tagName === 'CANVAS' ||
-        (target.closest && target.closest('[data-testid="stDataFrame"]'))
-      );
-      if (!insideGrid) { return; }
-      var undoBtn = doc.querySelector('[class*="st-key-icon_undo_items_"] button');
-      if (undoBtn && !undoBtn.disabled) {
-        e.preventDefault();
-        undoBtn.click();
-      }
-    }, true);
   } catch (e) {}
 })();
 </script>
@@ -947,13 +892,8 @@ if st.session_state[active_key] not in st.session_state[lot_ids_key]:
 # ------------------------------------------------------------ Step: лоты ---
 st.divider()
 step_heading("02", "Лоты тендера")
-st.caption("Товары, которые идут одной пачкой и зависят друг от друга (одна "
-           "поставка, один заказчик, одна цена/срок) — заносите позициями "
-           "внутри одного лота, в таблице позиций ниже. «Добавить раздельный "
-           "лот» — для по-настоящему независимого лота: свой менеджер, "
-           "заказчик, коэффициент наценки, валюта и сроки, отдельный блок "
-           "расчёта (шапка + позиции + итоги), напечатанный отдельно от "
-           "остальных лотов в том же Excel-файле.")
+st.caption("Товары одной поставки — позициями внутри лота. «Добавить раздельный "
+           "лот» — для независимого лота со своей шапкой и итогами.")
 
 
 def add_lot() -> None:
@@ -1053,19 +993,7 @@ for _field, _default in lot_header_store[active_id].items():
 items_state_key = f"items_{lot_type}_{active_id}"
 items_editor_key = f"items_{lot_type}_editor_{active_id}"
 items_seed_key = f"items_{lot_type}_seed_{active_id}"
-items_history_key = f"items_{lot_type}_history_{active_id}"
 st.session_state.setdefault(items_state_key, [])
-st.session_state.setdefault(items_history_key, [])
-
-
-def push_items_history(previous_items: list[dict]) -> None:
-    """Called right before items_state_key gets overwritten, with whatever
-    it held a moment ago - so "undo" (button or Ctrl+Z) has something to
-    restore. Capped at 10 entries; a table you're bulk-pasting into doesn't
-    need deeper history than "the last few things I did"."""
-    history = st.session_state[items_history_key]
-    history.append(previous_items)
-    del history[:-10]
 
 
 def reset_lot_header() -> None:
@@ -1084,20 +1012,7 @@ def reset_lot_header() -> None:
 def reset_items() -> None:
     """Same on_click timing requirement as reset_lot_header - items_editor_key
     is itself a data_editor widget key."""
-    push_items_history(st.session_state[items_state_key])
     st.session_state[items_state_key] = []
-    st.session_state.pop(items_seed_key, None)
-    st.session_state.pop(items_editor_key, None)
-
-
-def undo_last_items_change() -> None:
-    """on_click (also triggered by Ctrl+Z via the JS shortcut below, which
-    just clicks this same button) - restores whatever the table looked like
-    before the last edit, paste, or reset."""
-    history = st.session_state[items_history_key]
-    if not history:
-        return
-    st.session_state[items_state_key] = history.pop()
     st.session_state.pop(items_seed_key, None)
     st.session_state.pop(items_editor_key, None)
 
@@ -1119,7 +1034,6 @@ def apply_pasted_items() -> None:
     text = st.session_state.get(paste_key, "")
     if not text.strip():
         return
-    push_items_history(st.session_state[items_state_key])
     if lot_type == "kz":
         rows = parse_pasted_table(text, PASTE_COLUMNS_KZ, PASTE_NUMERIC_KZ)
         st.session_state[items_state_key] = [normalize_item_kz(r) for r in rows]
@@ -1140,10 +1054,8 @@ uploaded_file = st.file_uploader(
     type=["docx", "xlsx", "pdf"],
     accept_multiple_files=False,
 )
-st.caption("Распознавание достаёт наименование/ед.изм/кол-во/цену из документа и добавит их "
-           "в позиции текущего лота. Валюта, пошлина, кол-во машин, цена продажи, "
-           "доп.расходы — это ваши бизнес-решения, документ их не содержит, заполните "
-           "их вручную в таблице ниже.")
+st.caption("Достаёт наименование/ед.изм/кол-во/цену из документа. Остальное — "
+           "валюту, пошлину, цену продажи — заполните вручную в таблице.")
 
 recognize_btn = st.button("Распознать", type="primary", disabled=uploaded_file is None)
 
@@ -1226,52 +1138,33 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------- Step 2: товары ----
 st.divider()
-items_heading_col, items_undo_col, items_reset_col = st.columns(
-    [8, 1, 1], vertical_alignment="center")
+items_heading_col, items_reset_col = st.columns([9, 1], vertical_alignment="center")
 with items_heading_col:
     step_heading("04", f"Позиции лота {lot_ids.index(active_id) + 1}")
-with items_undo_col:
-    with st.container(key=f"icon_undo_items_{lot_type}_{active_id}"):
-        st.button("", key=f"btn_undo_items_{lot_type}_{active_id}",
-                  icon=":material/undo:", on_click=undo_last_items_change,
-                  disabled=not st.session_state[items_history_key],
-                  help="Отменить последнее изменение таблицы позиций (вставку, "
-                       "правку ячейки, удаление строки, сброс). Работает и через "
-                       "Ctrl+Z, когда фокус в таблице.")
 with items_reset_col:
     with st.container(key=f"icon_reset_items_{lot_type}_{active_id}"):
         st.button("", key=f"btn_reset_items_{lot_type}_{active_id}",
                   icon=":material/restart_alt:", on_click=reset_items,
-                  help="Очистить таблицу позиций этого лота до одной пустой строки.")
-st.caption("Можно выделить и скопировать диапазон ячеек прямо в Excel, затем "
-           "щёлкнуть по первой ячейке здесь и нажать Ctrl+V — новые строки "
-           "таблица добавит сама, плюсик жать не придётся. Числа с русской "
-           "раскладкой Excel (запятая вместо точки, пробел в разрядах) так "
-           "вставляются не всегда верно — если цена вставилась нулём или "
-           "перепуталась, воспользуйтесь способом «Вставить текстом» ниже, "
-           "он всегда разбирает такие числа правильно. Чтобы удалить строку: "
-           "выделите её слева (наведите на номер строки) и нажмите на значок "
-           "корзины сверху таблицы, либо клавишу Delete — строка исчезнет сразу."
-           + (" Страна происхождения / ТН ВЭД / транспорт указываются на каждый "
-              "товар отдельно — они могут отличаться от позиции к позиции."
+                  help="Очистить таблицу позиций.")
+st.caption("Ctrl+V вставляет несколько строк сразу, новые строки добавятся сами. "
+           "Для удаления строки: выделите слева и нажмите на корзину или Delete."
+           + (" Страна/ТН ВЭД/транспорт — свои у каждого товара."
               if lot_type == "foreign" else ""))
 
 _paste_col_hint = (", ".join(["Наименование", "Кол-во", "Цена DDP",
-                               "Цена продажи (необязательно)", "Доп.расходы (необязательно)"])
+                               "Цена продажи", "Доп.расходы"])
                     if lot_type == "kz" else
                     ", ".join(["Наименование", "Ед.изм", "Кол-во", "Цена FCA", "Цена продажи",
                                "Пошлина %", "Кол-во машин", "Накладные", "Доп.расходы",
                                "Страна", "ТН ВЭД", "Транспорт"]))
-with st.expander("📋 Вставить текстом (если обычная вставка Ctrl+V путает цены)"):
-    st.caption(f"Скопируйте диапазон в Excel (Ctrl+C), вставьте сюда (Ctrl+V) и нажмите "
-               f"кнопку ниже — заменит всю таблицу позиций этими данными. Порядок "
-               f"столбцов слева направо: {_paste_col_hint}. Лишние скопированные "
-               f"столбцы справа игнорируются, недостающие в конце можно не заполнять.")
+with st.expander("📋 Вставить текстом"):
+    st.caption(f"Порядок столбцов: {_paste_col_hint}. Понимает любые числа — "
+               f"с валютой, пробелами, запятой вместо точки.")
     paste_key = f"paste_text_{lot_type}_{active_id}"
     st.session_state.setdefault(paste_key, "")
     paste_text = st.text_area("Вставьте диапазон из Excel", key=paste_key, height=100,
                                label_visibility="collapsed")
-    st.button("Заменить таблицу позиций этими данными",
+    st.button("Заменить таблицу этими данными",
               key=f"btn_paste_apply_{lot_type}_{active_id}",
               on_click=apply_pasted_items, disabled=not paste_text.strip())
 
@@ -1295,19 +1188,7 @@ if lot_type == "kz":
     # state for this key) removes the feedback loop entirely - the editor
     # is the single source of truth for what's on screen; items_state_key
     # is only a read-only mirror kept in sync for validation/export below.
-    # Captured *before* the seed gets (re)built below, so the history push
-    # after data_editor - which compares its output against items_state_key
-    # - can tell "the grid just materialized whatever's already in
-    # items_state_key" (this render) apart from "the user actually changed
-    # something in an already-mounted grid" (every other render). Without
-    # this, the very first render of a fresh table pushes a bogus history
-    # entry: items_state_key starts as [] but the seed always shows at
-    # least one default blank row, so the two never matched literally, even
-    # though nothing an undo should ever need to reverse actually happened -
-    # same story after reset_items/apply_pasted_items/undo itself, which
-    # already push their own (real) history entry and pop the seed.
-    _items_seed_is_fresh = items_seed_key not in st.session_state
-    if _items_seed_is_fresh:
+    if items_seed_key not in st.session_state:
         current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_KZ)]
         st.session_state[items_seed_key] = pd.DataFrame(
             current_items,
@@ -1330,13 +1211,10 @@ if lot_type == "kz":
                 "Цена DDP, тнг", help="Цена закупки DDP (с НДС), тенге.",
                 min_value=0, step=100, format="%.2f", width=150),
             "sale_price_manual": st.column_config.NumberColumn(
-                "Цена продажи (если задал заказчик), тнг",
-                help="Заполняйте, только если заказчик сам назвал цену за штуку. "
-                     "Excel возьмёт эту цену как есть вместо своего расчёта "
-                     "«цена закупки × коэффициент наценки» для этой позиции - "
-                     "коэффициент наценки лота на неё влиять не будет. "
-                     "Оставьте 0, если цену считаем сами по коэффициенту (обычный случай).",
-                min_value=0, step=100, format="%.2f", width=280),
+                "Цена продажи заказчика, тнг",
+                help="Только если заказчик сам назвал цену — заменит расчёт по "
+                     "коэффициенту для этой позиции. Иначе оставьте 0.",
+                min_value=0, step=100, format="%.2f", width=220),
             "extra_cost": st.column_config.NumberColumn(
                 "Доп.расходы, тнг", help="Прочие расходы по товару, тенге.",
                 min_value=0, step=1000, format="%.2f", width=150),
@@ -1345,14 +1223,10 @@ if lot_type == "kz":
     )
     # Read-only mirror for validation/export (Generate button, currency
     # hint) - never fed back into the editor above, so it can't create the
-    # feedback loop described up top. Runs on *every* rerun, not just real
-    # edits (typing in an unrelated field elsewhere on the page reruns this
-    # too) - only push undo history when the table actually changed, or
-    # every unrelated rerun would silently burn through the 10-entry cap.
-    _new_kz_items = [normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")]
-    if not _items_seed_is_fresh and _new_kz_items != st.session_state[items_state_key]:
-        push_items_history(st.session_state[items_state_key])
-    st.session_state[items_state_key] = _new_kz_items
+    # feedback loop described up top.
+    st.session_state[items_state_key] = [
+        normalize_item_kz(row) for row in edited_df.fillna("").to_dict("records")
+    ]
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 
     # Purely informational - nothing here feeds back into Excel. When the
@@ -1384,10 +1258,7 @@ if lot_type == "kz":
 else:
     cols = ["name", "unit", "qty", "price_fca", "sale_price_kzt", "duty_rate_pct",
             "truck_count", "overhead", "extra_cost", "country", "tnved", "transport"]
-    # Same "was the seed just (re)built this render" tracking as the kz
-    # branch above - see the comment there for why it matters for undo.
-    _items_seed_is_fresh = items_seed_key not in st.session_state
-    if _items_seed_is_fresh:
+    if items_seed_key not in st.session_state:
         current_items = st.session_state[items_state_key] or [dict(DEFAULT_ROW_FX)]
         st.session_state[items_seed_key] = pd.DataFrame(current_items, columns=cols)
     currency_now = st.session_state.get(k("currency"), "USD")
@@ -1423,11 +1294,9 @@ else:
         },
         key=items_editor_key,
     )
-    # Same "only push on a real change" reasoning as the kz table above.
-    _new_fx_items = [normalize_item_fx(row) for row in edited_df.fillna("").to_dict("records")]
-    if not _items_seed_is_fresh and _new_fx_items != st.session_state[items_state_key]:
-        push_items_history(st.session_state[items_state_key])
-    st.session_state[items_state_key] = _new_fx_items
+    st.session_state[items_state_key] = [
+        normalize_item_fx(row) for row in edited_df.fillna("").to_dict("records")
+    ]
     items = [it for it in st.session_state[items_state_key] if it["name"].strip()]
 
 # --------------------------------------------------- Step 3: данные лота ---
@@ -1439,8 +1308,7 @@ with header_reset_col:
     with st.container(key=f"icon_reset_header_{lot_type}_{active_id}"):
         st.button("", key=f"btn_reset_header_{lot_type}_{active_id}",
                   icon=":material/restart_alt:", on_click=reset_lot_header,
-                  help="Сбросить менеджера, заказчика, даты, наценку, курс и "
-                       "остальные поля этого лота до значений по умолчанию.")
+                  help="Сбросить данные лота к значениям по умолчанию.")
 
 left_col, right_col = st.columns(2)
 
