@@ -59,10 +59,16 @@ def extract_fields(raw_text: str, api_key: str | None = None) -> dict:
     client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
     response = client.messages.create(
         model="claude-opus-4-8",
-        max_tokens=2000,
+        # 2000 could truncate the JSON reply itself on a tender with many
+        # line items (each item costs ~40-60 tokens of output) - raised to
+        # comfortably fit a few hundred items before json.loads() below
+        # would ever hit a cut-off response.
+        max_tokens=8000,
         thinking={"type": "adaptive"},
         output_config={"effort": "medium"},
-        messages=[{"role": "user", "content": EXTRACTION_PROMPT + raw_text[:15000]}],
+        # 60000 here is just a hard safety ceiling, not the active limit -
+        # app.py already caps raw_text at 50000 chars before it gets here.
+        messages=[{"role": "user", "content": EXTRACTION_PROMPT + raw_text[:60000]}],
     )
     text = next(block.text for block in response.content if block.type == "text")
     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()

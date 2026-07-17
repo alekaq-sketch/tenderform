@@ -706,6 +706,72 @@ st.iframe(
 })();
 </script>
 <script>
+// -------------------------------------- Кнопка «Вставить текстом» вживую ---
+// The "Заменить таблицу этими данными" button must look AND actually be
+// inactive while the textarea is empty, and work immediately (no extra
+// click elsewhere first) the instant something is pasted in.
+//
+// st.text_area only syncs its value to the backend on blur/Ctrl+Enter, not
+// on paste/keystroke, so Streamlit's own disabled= prop (computed from that
+// stale server-side value) can't track "is there text right now" in real
+// time - it would still read "empty" right after pasting. Tried faking it
+// by flipping the DOM node's disabled attribute from here: doesn't work,
+// because React checks its OWN internal disabled prop before running the
+// click handler, not the raw DOM attribute - the click gets silently
+// swallowed and apply_pasted_items() never runs, even though the button
+// visibly looks clickable. So the button is left genuinely enabled
+// server-side, and this instead adds an independent guard directly on the
+// click event: a capture-phase listener that cancels the event outright
+// (before it ever reaches React's own handler) when the textarea is empty,
+// and otherwise lets it through untouched - a real, non-cosmetic block, not
+// just a look. When it DOES go through, Streamlit correctly submits
+// whatever's currently in the textarea even without a prior blur (confirmed
+// by testing) - the button's own click is itself the interaction that
+// flushes the pending text along with it.
+(function () {
+  try {
+    var doc = window.parent.document;
+    if (doc.__ruPasteButtonSyncInstalled) { return; }
+    doc.__ruPasteButtonSyncInstalled = true;
+
+    function findApplyButton(textarea) {
+      var expander = textarea.closest('[data-testid="stExpander"]');
+      return expander && expander.querySelector('[class*="st-key-paste_apply_btn_"] button');
+    }
+
+    function syncLook(textarea) {
+      var btn = findApplyButton(textarea);
+      if (!btn) { return; }
+      var hasText = textarea.value.trim() !== '';
+      btn.style.opacity = hasText ? '' : '0.45';
+      btn.style.cursor = hasText ? '' : 'not-allowed';
+    }
+
+    function bindTextareas() {
+      doc.querySelectorAll('[data-testid="stExpander"] textarea').forEach(function (ta) {
+        if (ta.__ruBound) { return; }
+        ta.__ruBound = true;
+        ta.addEventListener('input', function () { syncLook(ta); });
+        syncLook(ta);
+
+        var btn = findApplyButton(ta);
+        if (!btn || btn.__ruGuardBound) { return; }
+        btn.__ruGuardBound = true;
+        btn.addEventListener('click', function (e) {
+          if (ta.value.trim() === '') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        }, true);
+      });
+    }
+
+    bindTextareas();
+    new MutationObserver(bindTextareas).observe(doc.body, { childList: true, subtree: true });
+  } catch (e) {}
+})();
+</script>
+<script>
 // --------------------------------------------- Русские месяцы в календаре --
 // st.date_input's calendar popup (BaseWeb) has no locale setting exposed
 // from Python - it always renders English month/weekday names. The popup is
@@ -1065,7 +1131,12 @@ if uploaded_file and recognize_btn:
         with st.spinner("Читаю документ..."):
             raw_text = extract_any(tmp_path)
             extracted_items = extract_items_free(tmp_path)
-        st.session_state["raw_text"] = raw_text[:8000]
+        # 8000 was too tight for tenders with many line items - a long spec
+        # could get cut off before the LLM step ever saw the later items.
+        # 50000 chars (~12k tokens) comfortably covers large multi-page
+        # specs while still capping worst-case cost/latency on a truly
+        # pathological upload.
+        st.session_state["raw_text"] = raw_text[:50000]
         if lot_type == "kz":
             st.session_state[items_state_key] = [
                 normalize_item_kz({"name": it.get("name"), "qty": it.get("qty"),
@@ -1162,11 +1233,25 @@ with st.expander("📋 Вставить текстом"):
                f"с валютой, пробелами, запятой вместо точки.")
     paste_key = f"paste_text_{lot_type}_{active_id}"
     st.session_state.setdefault(paste_key, "")
-    paste_text = st.text_area("Вставьте диапазон из Excel", key=paste_key, height=100,
-                               label_visibility="collapsed")
-    st.button("Заменить таблицу этими данными",
-              key=f"btn_paste_apply_{lot_type}_{active_id}",
-              on_click=apply_pasted_items, disabled=not paste_text.strip())
+    st.text_area("Вставьте диапазон из Excel", key=paste_key, height=100,
+                  label_visibility="collapsed")
+    # Genuinely enabled (no disabled= at all) - apply_pasted_items() already
+    # no-ops quietly on empty text, so nothing needs to block the click at
+    # the Python/React level. A real Streamlit disabled=True prop can't be
+    # undone from JS: even flipping the DOM's disabled attribute off doesn't
+    # make React's own click handling fire, since it checks the prop
+    # Streamlit sent it, not the raw DOM attribute - the click gets silently
+    # swallowed before this callback ever runs (confirmed by testing - the
+    # button visibly "worked" but apply_pasted_items() never actually
+    # executed). The greyed-out "looks disabled while empty" appearance is
+    # done separately, purely visually, below (CSS only, click always
+    # really works - important since it also means a real Ctrl+V paste
+    # followed immediately by a click, with no intervening blur, still
+    # submits the just-pasted text correctly).
+    with st.container(key=f"paste_apply_btn_{lot_type}_{active_id}"):
+        st.button("Заменить таблицу этими данными",
+                  key=f"btn_paste_apply_{lot_type}_{active_id}",
+                  on_click=apply_pasted_items)
 
 DEFAULT_ROW_KZ = {"name": "", "qty": 1, "purchase_price_ddp": 0.0, "extra_cost": 0.0,
                    "sale_price_manual": 0.0}

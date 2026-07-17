@@ -30,14 +30,29 @@ def _norm(s):
 
 
 def _to_number(s):
+    """Was silently dropping the minus sign (re.sub stripped anything but
+    digits/dot, including "-") and mishandling "1.234,56"-style European
+    formatting (dot-thousands, comma-decimal) - blindly replacing "," with
+    "." before stripping non-numeric chars turned that into "1.234.56",
+    which fails to parse and returns None instead of 1234.56. Same
+    disambiguation approach as app.py's parse_pasted_number: strip
+    everything except digits/separators/minus first, then decide which
+    separator is the decimal point by whichever one appears last."""
     if s is None:
         return None
-    s = str(s).strip().replace(" ", "").replace(",", ".")
-    s = re.sub(r"[^\d.]", "", s)
-    if not s or s == ".":
+    t = re.sub(r"[^\d,.\-]", "", str(s))
+    if not t or t in ("-", ".", ","):
         return None
+    has_comma, has_dot = "," in t, "." in t
+    if has_comma and has_dot:
+        if t.rindex(",") > t.rindex("."):
+            t = t.replace(".", "").replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    elif has_comma:
+        t = t.replace(",", ".")
     try:
-        return float(s) if "." in s else int(s)
+        return float(t) if "." in t else int(t)
     except ValueError:
         return None
 
