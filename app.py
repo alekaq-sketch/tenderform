@@ -246,8 +246,18 @@ st.markdown(
   }
 
   div[data-testid="stFileUploader"] label { display: none; }
+  /* Tinted background (distinct from the plain white text/number fields)
+     plus a faint document-icon watermark in the corner, so the empty
+     dropzone reads as "a place for a document" at a glance instead of a
+     blank rectangle - the watermark sits in a corner, not centered, so it
+     never competes with Streamlit's own icon+text in the middle. */
   [data-testid="stFileUploaderDropzone"] {
     border-radius: 10px !important;
+    background-color: var(--paper-2) !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%231c6fe0' fill-opacity='0.16' d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath fill='%231c6fe0' fill-opacity='0.26' d='M14 2v6h6z'/%3E%3Crect x='7' y='12.4' width='8' height='1.3' rx='0.6' fill='%231c6fe0' fill-opacity='0.16'/%3E%3Crect x='7' y='15.2' width='10' height='1.3' rx='0.6' fill='%231c6fe0' fill-opacity='0.16'/%3E%3Crect x='7' y='18' width='6' height='1.3' rx='0.6' fill='%231c6fe0' fill-opacity='0.16'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px top 14px;
+    background-size: 44px 44px;
   }
 
   .stButton > button,
@@ -749,10 +759,18 @@ st.iframe(
 
     function bindTextareas() {
       doc.querySelectorAll('[data-testid="stExpander"] textarea').forEach(function (ta) {
+        // Re-synced on every call, bound or not - a successful apply clears
+        // the textarea server-side (st.session_state[paste_key] = ""), and
+        // Streamlit updates the DOM node's value as a plain JS property,
+        // which never fires a native 'input' event - without this, the
+        // button would keep LOOKING lit after a submit even though the
+        // click-guard below already correctly re-blocks it (a submit always
+        // triggers *some* mutation elsewhere on the page - the items table
+        // re-rendering - so this still runs via the MutationObserver below).
+        syncLook(ta);
         if (ta.__ruBound) { return; }
         ta.__ruBound = true;
         ta.addEventListener('input', function () { syncLook(ta); });
-        syncLook(ta);
 
         var btn = findApplyButton(ta);
         if (!btn || btn.__ruGuardBound) { return; }
@@ -1111,6 +1129,13 @@ def apply_pasted_items() -> None:
     st.session_state[paste_key] = ""
 
 # ------------------------------------------------- Step 1: загрузка файла --
+# One shared upload, two ways to read it - previously two separate
+# section-cards side by side made it look like there were two independent
+# uploads (risking someone dropping a different file into "each"), when the
+# LLM step actually always reads raw_text from whatever the free recognizer
+# last extracted from *this* uploaded_file. Grouping them under one upload
+# with the LLM option tucked into a popover makes that shared-source
+# relationship visually obvious instead of implied.
 st.divider()
 step_heading("03", f"Загрузите документ для лота {lot_ids.index(active_id) + 1}")
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -1123,7 +1148,18 @@ uploaded_file = st.file_uploader(
 st.caption("Достаёт наименование/ед.изм/кол-во/цену из документа. Остальное — "
            "валюту, пошлину, цену продажи — заполните вручную в таблице.")
 
-recognize_btn = st.button("Распознать", type="primary", disabled=uploaded_file is None)
+recognize_col, llm_col = st.columns(2)
+with recognize_col:
+    recognize_btn = st.button("Распознать", type="primary", width="stretch",
+                               disabled=uploaded_file is None)
+with llm_col:
+    with st.popover("Распознать через LLM", icon=":material/smart_toy:",
+                     disabled=uploaded_file is None, width="stretch"):
+        api_key = st.text_input(
+            "Anthropic API ключ", value=get_secret("ANTHROPIC_API_KEY"),
+            type="password", placeholder="Введите API-ключ...",
+        )
+        llm_btn = st.button("Запустить", width="stretch", disabled=not api_key)
 
 if uploaded_file and recognize_btn:
     tmp_path = save_uploaded_file(uploaded_file)
@@ -1160,24 +1196,7 @@ if uploaded_file and recognize_btn:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-if st.session_state["raw_text"]:
-    with st.expander("Сырой текст документа", expanded=False):
-        st.text_area(
-            "raw_preview", st.session_state["raw_text"], height=180,
-            label_visibility="collapsed", disabled=True,
-        )
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown("**Распознавание через LLM** *(опционально)*")
-
-api_key = st.text_input(
-    "Anthropic API ключ", value=get_secret("ANTHROPIC_API_KEY"),
-    type="password", placeholder="Введите API-ключ...",
-)
-
-if st.button("Распознать через LLM", disabled=not api_key):
+if uploaded_file and llm_btn:
     if not st.session_state["raw_text"]:
         st.warning("Сначала загрузите документ и нажмите «Распознать».")
     else:
@@ -1204,6 +1223,13 @@ if st.button("Распознать через LLM", disabled=not api_key):
             st.success(f"LLM нашёл позиций: {len(extracted_items)}")
         except Exception as exc:
             st.error(f"Ошибка LLM: {exc}")
+
+if st.session_state["raw_text"]:
+    with st.expander("Сырой текст документа", expanded=False):
+        st.text_area(
+            "raw_preview", st.session_state["raw_text"], height=180,
+            label_visibility="collapsed", disabled=True,
+        )
 
 st.markdown("</div>", unsafe_allow_html=True)
 
