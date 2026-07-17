@@ -1,0 +1,15 @@
+name: Keep Streamlit app awake
+
+on:
+  schedule:
+    # каждые 6 часов - Streamlit Cloud усыпляет приложение примерно
+    # после 12 часов бездействия, так что этого с запасом хватает
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app
+        run: curl -sSf -o /dev/null "https://heatenergyform.streamlit.app/"
